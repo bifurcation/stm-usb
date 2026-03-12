@@ -55,13 +55,17 @@ Open http://localhost:8080 in Chrome or Edge (WebUSB requires a Chromium-based b
 4. Type text and press Enter or click Send
 5. The device echoes back each line
 
-## Hardware
+## Hardware Assumptions
 
-Tested with STM32F411CEU6 ("Black Pill" board) with 25MHz crystal.
+This firmware has not been tested on real hardware. It assumes:
 
-USB pins:
-- PA11 - USB D-
-- PA12 - USB D+
+| Assumption                | Value          | Code Location                                                      |
+|---------------------------|----------------|---------------------------------------------------------------------|
+| MCU                       | STM32F411CE    | [firmware/Cargo.toml:8](firmware/Cargo.toml#L8)                     |
+| HSE crystal frequency     | 25 MHz         | [firmware/src/main.rs:34](firmware/src/main.rs#L34)                 |
+| USB D- pin                | PA11           | [firmware/src/main.rs:64](firmware/src/main.rs#L64)                 |
+| USB D+ pin                | PA12           | [firmware/src/main.rs:63](firmware/src/main.rs#L63)                 |
+| VBUS detection            | Disabled       | [firmware/src/main.rs:58](firmware/src/main.rs#L58)                 |
 
 ## USB IDs
 
