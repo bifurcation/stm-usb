@@ -7,9 +7,9 @@ use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
 use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
 use embassy_usb::driver::EndpointError;
+use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::Builder;
-use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
 use heapless::Vec;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -57,7 +57,14 @@ async fn main(_spawner: Spawner) {
     let mut usb_config = embassy_stm32::usb::Config::default();
     usb_config.vbus_detection = false;
 
-    let driver = Driver::new_fs(p.USB_OTG_FS, Irqs, p.PA12, p.PA11, ep_out_buffer, usb_config);
+    let driver = Driver::new_fs(
+        p.USB_OTG_FS,
+        Irqs,
+        p.PA12,
+        p.PA11,
+        ep_out_buffer,
+        usb_config,
+    );
 
     let mut config = embassy_usb::Config::new(VENDOR_ID, PRODUCT_ID);
     config.manufacturer = Some(MANUFACTURER);

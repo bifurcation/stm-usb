@@ -26,12 +26,14 @@ Open http://localhost:8080 in Chrome or Edge (WebUSB requires a Chromium-based b
 
 ## Make Targets
 
-| Target | Description |
-|--------|-------------|
-| `make firmware` | Build firmware and create DFU binary (.bin) |
-| `make wasm` | Build WASM control panel (requires firmware first) |
-| `make serve` | Build all and serve on http://localhost:8080 |
-| `make clean` | Clean all build artifacts |
+| Target               | Description                                      |
+|----------------------|--------------------------------------------------|
+| `make firmware`      | Build firmware and create DFU binary (.bin)      |
+| `make wasm`          | Build WASM control panel (requires firmware first) |
+| `make serve`         | Build all and serve on http://localhost:8080     |
+| `make clean`         | Clean all build artifacts                        |
+| `make check`         | Run formatting and build checks (same as CI)     |
+| `make install-hooks` | Install git pre-push hook                        |
 
 ## Usage
 
@@ -63,7 +65,7 @@ USB pins:
 
 ## USB IDs
 
-| Mode | VID | PID |
-|------|-----|-----|
+| Mode        | VID    | PID    |
+|-------------|--------|--------|
 | Application | 0x1209 | 0x0001 |
-| DFU | 0x0483 | 0xDF11 |
+| DFU         | 0x0483 | 0xDF11 |

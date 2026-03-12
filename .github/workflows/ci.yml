@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: thumbv7em-none-eabihf,wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Check firmware formatting
+        working-directory: firmware
+        run: cargo fmt --check
+
+      - name: Build firmware
+        working-directory: firmware
+        run: cargo build --release
+
+      - name: Check control formatting
+        working-directory: control
+        run: cargo fmt --check
+
+      - name: Build control (WASM)
+        working-directory: control
+        run: wasm-pack build --target web --out-dir www/pkg

@@ -86,11 +86,7 @@ pub async fn flash_firmware(firmware_data: &[u8]) -> Result<(), JsValue> {
         );
 
         let data = js_sys::Uint8Array::from(chunk);
-        JsFuture::from(
-            device
-                .control_transfer_out_with_buffer_source(&params, &data)?
-        )
-        .await?;
+        JsFuture::from(device.control_transfer_out_with_buffer_source(&params, &data)?).await?;
 
         loop {
             let status_params = UsbControlTransferParameters::new(
@@ -102,7 +98,9 @@ pub async fn flash_firmware(firmware_data: &[u8]) -> Result<(), JsValue> {
             );
 
             let transfer: web_sys::UsbInTransferResult =
-                JsFuture::from(device.control_transfer_in(&status_params, 6)).await?.dyn_into()?;
+                JsFuture::from(device.control_transfer_in(&status_params, 6))
+                    .await?
+                    .dyn_into()?;
 
             if transfer.status() == UsbTransferStatus::Ok {
                 if let Some(data) = transfer.data() {
@@ -142,13 +140,8 @@ pub async fn flash_firmware(firmware_data: &[u8]) -> Result<(), JsValue> {
     let empty = js_sys::Uint8Array::new_with_length(0);
     JsFuture::from(device.control_transfer_out_with_buffer_source(&params, &empty)?).await?;
 
-    let detach_params = UsbControlTransferParameters::new(
-        0,
-        UsbRecipient::Interface,
-        0,
-        UsbRequestType::Class,
-        0,
-    );
+    let detach_params =
+        UsbControlTransferParameters::new(0, UsbRecipient::Interface, 0, UsbRequestType::Class, 0);
     let _ = device.control_transfer_out(&detach_params);
 
     log("Firmware flashed successfully!");
@@ -209,7 +202,9 @@ pub async fn send_text(device: &UsbDevice, text: &str) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub async fn receive_text(device: &UsbDevice) -> Result<String, JsValue> {
     let transfer: web_sys::UsbInTransferResult =
-        JsFuture::from(device.transfer_in(WEBUSB_ENDPOINT_IN, 64)).await?.dyn_into()?;
+        JsFuture::from(device.transfer_in(WEBUSB_ENDPOINT_IN, 64))
+            .await?
+            .dyn_into()?;
 
     if transfer.status() != UsbTransferStatus::Ok {
         return Err(JsValue::from_str("Transfer failed"));

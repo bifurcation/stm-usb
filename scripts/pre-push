@@ -1,0 +1,5 @@
+#!/bin/bash
+# Pre-push hook - runs the same checks as CI
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/check.sh"
