@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STM-USB Control Panel</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 {
+            color: #00d4ff;
+            border-bottom: 2px solid #00d4ff;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #ff6b6b;
+            margin-top: 30px;
+        }
+        .section {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #00d4ff;
+            color: #1a1a2e;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #00b8e6;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        button.danger {
+            background: #ff6b6b;
+        }
+        button.danger:hover {
+            background: #ff5252;
+        }
+        input[type="text"] {
+            background: #0f0f23;
+            border: 1px solid #333;
+            color: #eee;
+            padding: 10px;
+            font-size: 16px;
+            border-radius: 4px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        textarea {
+            background: #0f0f23;
+            border: 1px solid #333;
+            color: #0f0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 14px;
+            padding: 10px;
+            border-radius: 4px;
+            width: 100%;
+            height: 300px;
+            resize: vertical;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        .status.connected {
+            background: #1e4620;
+            color: #4caf50;
+        }
+        .status.disconnected {
+            background: #4a1e1e;
+            color: #f44336;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+        .input-group input {
+            flex: 1;
+            margin-bottom: 0;
+        }
+        .warning {
+            background: #4a3f1e;
+            border-left: 4px solid #ff9800;
+            padding: 10px 15px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>STM-USB Control Panel</h1>
+
+    <div class="section">
+        <h2>1. Flash Firmware (DFU)</h2>
+        <div class="warning">
+            <strong>Instructions:</strong> Put your device into DFU mode first:
+            <ol>
+                <li>Hold BOOT0 button</li>
+                <li>Press and release RESET button</li>
+                <li>Release BOOT0 button</li>
+            </ol>
+        </div>
+        <button id="flashBtn" class="danger" onclick="flashFirmware()">Flash Firmware via DFU</button>
+    </div>
+
+    <div class="section">
+        <h2>2. Connect & Communicate</h2>
+        <div id="connectionStatus" class="status disconnected">Disconnected</div>
+        <button id="connectBtn" onclick="connectDevice()">Connect to Device</button>
+        <button id="disconnectBtn" onclick="disconnectDevice()" disabled>Disconnect</button>
+
+        <div style="margin-top: 20px;">
+            <label for="textInput">Send text to device:</label>
+            <div class="input-group">
+                <input type="text" id="textInput" placeholder="Type a message and press Enter or Send"
+                       onkeypress="handleKeyPress(event)" disabled>
+                <button id="sendBtn" onclick="sendText()" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Log Output</h2>
+        <textarea id="output" readonly></textarea>
+        <button onclick="clearLog()">Clear Log</button>
+    </div>
+
+    <script type="module">
+        import init, {
+            flash_firmware,
+            connect_device,
+            send_text,
+            receive_text,
+            disconnect_device
+        } from './pkg/control.js';
+
+        let device = null;
+        let receiveLoop = null;
+
+        window.flashFirmware = async function() {
+            const btn = document.getElementById('flashBtn');
+            btn.disabled = true;
+            btn.textContent = 'Flashing...';
+
+            try {
+                await flash_firmware();
+            } catch (e) {
+                console.error('Flash error:', e);
+                log('Error: ' + e);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Flash Firmware via DFU';
+            }
+        };
+
+        window.connectDevice = async function() {
+            try {
+                device = await connect_device();
+                updateConnectionStatus(true);
+                startReceiveLoop();
+            } catch (e) {
+                console.error('Connect error:', e);
+                log('Error: ' + e);
+            }
+        };
+
+        window.disconnectDevice = async function() {
+            stopReceiveLoop();
+            if (device) {
+                try {
+                    await disconnect_device(device);
+                } catch (e) {
+                    console.error('Disconnect error:', e);
+                }
+                device = null;
+            }
+            updateConnectionStatus(false);
+        };
+
+        window.sendText = async function() {
+            const input = document.getElementById('textInput');
+            const text = input.value.trim();
+            if (!text || !device) return;
+
+            try {
+                await send_text(device, text);
+                input.value = '';
+            } catch (e) {
+                console.error('Send error:', e);
+                log('Error: ' + e);
+                if (e.toString().includes('device')) {
+                    await disconnectDevice();
+                }
+            }
+        };
+
+        window.handleKeyPress = function(event) {
+            if (event.key === 'Enter') {
+                sendText();
+            }
+        };
+
+        window.clearLog = function() {
+            document.getElementById('output').value = '';
+        };
+
+        function updateConnectionStatus(connected) {
+            const status = document.getElementById('connectionStatus');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            const textInput = document.getElementById('textInput');
+            const sendBtn = document.getElementById('sendBtn');
+
+            if (connected) {
+                status.className = 'status connected';
+                status.textContent = 'Connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                textInput.disabled = false;
+                sendBtn.disabled = false;
+                textInput.focus();
+            } else {
+                status.className = 'status disconnected';
+                status.textContent = 'Disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                textInput.disabled = true;
+                sendBtn.disabled = true;
+            }
+        }
+
+        function startReceiveLoop() {
+            receiveLoop = setInterval(async () => {
+                if (!device) return;
+                try {
+                    await receive_text(device);
+                } catch (e) {
+                    // Ignore timeout errors, they're expected
+                    if (!e.toString().includes('timeout')) {
+                        console.error('Receive error:', e);
+                    }
+                }
+            }, 100);
+        }
+
+        function stopReceiveLoop() {
+            if (receiveLoop) {
+                clearInterval(receiveLoop);
+                receiveLoop = null;
+            }
+        }
+
+        function log(msg) {
+            const output = document.getElementById('output');
+            output.value += msg + '\n';
+            output.scrollTop = output.scrollHeight;
+        }
+
+        // Initialize WASM
+        init().then(() => {
+            log('WebAssembly module loaded');
+            log('Ready to flash firmware or connect to device');
+        }).catch(e => {
+            log('Error loading WASM: ' + e);
+        });
+    </script>
+</body>
+</html>
