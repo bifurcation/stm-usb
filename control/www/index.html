@@ -164,10 +164,18 @@
         window.flashFirmware = async function() {
             const btn = document.getElementById('flashBtn');
             btn.disabled = true;
-            btn.textContent = 'Flashing...';
+            btn.textContent = 'Loading firmware...';
 
             try {
-                await flash_firmware();
+                const response = await fetch('firmware.bin');
+                if (!response.ok) {
+                    throw new Error('Failed to load firmware.bin');
+                }
+                const firmwareData = new Uint8Array(await response.arrayBuffer());
+                log(`Loaded firmware: ${firmwareData.length} bytes`);
+
+                btn.textContent = 'Flashing...';
+                await flash_firmware(firmwareData);
             } catch (e) {
                 console.error('Flash error:', e);
                 log('Error: ' + e);

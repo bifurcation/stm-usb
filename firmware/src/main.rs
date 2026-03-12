@@ -3,13 +3,13 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_stm32::usb::{Driver, Instance};
+use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
 use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
-use embassy_usb::control::OutResponse;
 use embassy_usb::driver::EndpointError;
 use embassy_usb::msos::{self, windows_version};
-use embassy_usb::{Builder, Handler};
+use embassy_usb::Builder;
+use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
 use heapless::Vec;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -63,7 +63,7 @@ async fn main(_spawner: Spawner) {
     config.manufacturer = Some(MANUFACTURER);
     config.product = Some(PRODUCT);
     config.serial_number = Some(SERIAL);
-    config.device_class = 0xFF;
+    config.device_class = 0xFF; // Vendor-specific
     config.device_sub_class = 0x00;
     config.device_protocol = 0x00;
 
@@ -83,54 +83,63 @@ async fn main(_spawner: Spawner) {
 
     // Add WebUSB capability
     static WEBUSB_STATE: StaticCell<WebUsbState> = StaticCell::new();
-    let webusb_config = WebUsbConfig {
+    static WEBUSB_CONFIG: StaticCell<WebUsbConfig> = StaticCell::new();
+    let webusb_config = WEBUSB_CONFIG.init(WebUsbConfig {
         max_packet_size: 64,
         vendor_code: 1,
-        landing_url: Some(Url::Https(LANDING_PAGE_URL)),
-    };
+        landing_url: Some(Url::new(LANDING_PAGE_URL)),
+    });
     let webusb_state = WEBUSB_STATE.init(WebUsbState::new());
-    let (webusb_sender, mut webusb_receiver, webusb) =
-        WebUsb::new(&mut builder, webusb_state, webusb_config);
+    WebUsb::configure(&mut builder, webusb_state, webusb_config);
 
     // Add MS OS 2.0 descriptors for Windows compatibility
-    builder.msos_descriptor(windows_version::WIN8_1, 0);
+    builder.msos_descriptor(windows_version::WIN8_1, 2);
     builder.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
 
-    static HANDLER: StaticCell<ControlHandler> = StaticCell::new();
-    let handler = HANDLER.init(ControlHandler);
-    builder.handler(handler);
+    // Create vendor-specific function with bulk endpoints
+    let (mut ep_out, mut ep_in) = {
+        let mut function = builder.function(0xFF, 0x00, 0x00);
+        let mut interface = function.interface();
+        let mut alt = interface.alt_setting(0xFF, 0x00, 0x00, None);
+        let ep_out = alt.endpoint_bulk_out(64);
+        let ep_in = alt.endpoint_bulk_in(64);
+        (ep_out, ep_in)
+    };
 
     let mut usb = builder.build();
     let usb_fut = usb.run();
 
     let echo_fut = async {
         loop {
-            webusb_receiver.wait_connection().await;
-            info!("WebUSB connected");
+            // Wait for USB to be configured
+            ep_out.wait_enabled().await;
+            info!("USB configured, ready for data");
 
             let mut line_buf: Vec<u8, 256> = Vec::new();
             let mut read_buf = [0u8; 64];
 
             loop {
-                match webusb_receiver.read_packet(&mut read_buf).await {
+                match ep_out.read(&mut read_buf).await {
                     Ok(n) => {
                         for &byte in &read_buf[..n] {
                             if byte == b'\n' || byte == b'\r' {
                                 if !line_buf.is_empty() {
-                                    info!("Received line: {:?}", core::str::from_utf8(&line_buf));
+                                    if let Ok(s) = core::str::from_utf8(&line_buf) {
+                                        info!("Received: {}", s);
+                                    }
                                     // Echo the line back with newline
-                                    if let Err(e) = webusb_sender.write_packet(&line_buf).await {
-                                        info!("Write error: {:?}", e);
+                                    if ep_in.write(&line_buf).await.is_err() {
+                                        info!("Write error");
                                         break;
                                     }
-                                    if let Err(e) = webusb_sender.write_packet(b"\r\n").await {
-                                        info!("Write error: {:?}", e);
+                                    if ep_in.write(b"\r\n").await.is_err() {
+                                        info!("Write error");
                                         break;
                                     }
                                     line_buf.clear();
                                 }
                             } else if line_buf.push(byte).is_err() {
-                                info!("Line buffer overflow, clearing");
+                                info!("Line buffer overflow");
                                 line_buf.clear();
                             }
                         }
@@ -139,7 +148,7 @@ async fn main(_spawner: Spawner) {
                         info!("Buffer overflow");
                     }
                     Err(EndpointError::Disabled) => {
-                        info!("WebUSB disconnected");
+                        info!("USB disconnected");
                         break;
                     }
                 }
@@ -148,16 +157,4 @@ async fn main(_spawner: Spawner) {
     };
 
     embassy_futures::join::join(usb_fut, echo_fut).await;
-}
-
-struct ControlHandler;
-
-impl Handler for ControlHandler {
-    fn control_out(
-        &mut self,
-        _req: embassy_usb::control::Request,
-        _data: &[u8],
-    ) -> Option<OutResponse> {
-        None
-    }
 }

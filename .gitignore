@@ -2,4 +2,5 @@
 /firmware/target
 /control/target
 /control/www/pkg
+/control/www/firmware.bin
 Cargo.lock
