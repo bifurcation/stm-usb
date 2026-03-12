@@ -1,5 +1,5 @@
 [target.thumbv7em-none-eabihf]
-runner = "probe-rs run --chip STM32F411CEUx"
+runner = "sh -c 'echo \"cargo run is not supported for this crate. Use make firmware to build.\"; exit 1'"
 
 [build]
 target = "thumbv7em-none-eabihf"

@@ -9,44 +9,29 @@ WebUSB echo device firmware for STM32F411CEU6 with a web-based control panel.
 
 ## Requirements
 
-### Firmware
-- Rust with `thumbv7em-none-eabihf` target: `rustup target add thumbv7em-none-eabihf`
-- probe-rs (optional, for debugging): `cargo install probe-rs-tools`
-
-### Control
+- Rust with targets: `rustup target add thumbv7em-none-eabihf wasm32-unknown-unknown`
+- cargo-binutils: `cargo install cargo-binutils && rustup component add llvm-tools`
 - wasm-pack: `cargo install wasm-pack`
-- A web server (e.g., `python3 -m http.server` or `npx serve`)
+- Python 3 (for serving)
 
-## Building
+## Quick Start
 
-### Firmware
-
-```bash
-cd firmware
-cargo build --release
-```
-
-The binary will be at `target/thumbv7em-none-eabihf/release/firmware`.
-
-### Control Panel
-
-The control crate embeds the firmware binary, so build the firmware first.
+Build everything and start the server:
 
 ```bash
-cd control
-wasm-pack build --target web --out-dir www/pkg
-```
-
-## Running
-
-Serve the control panel:
-
-```bash
-cd control/www
-python3 -m http.server 8080
+make serve
 ```
 
 Open http://localhost:8080 in Chrome or Edge (WebUSB requires a Chromium-based browser).
+
+## Make Targets
+
+| Target | Description |
+|--------|-------------|
+| `make firmware` | Build firmware and create DFU binary (.bin) |
+| `make wasm` | Build WASM control panel (requires firmware first) |
+| `make serve` | Build all and serve on http://localhost:8080 |
+| `make clean` | Clean all build artifacts |
 
 ## Usage
 

@@ -78,7 +78,7 @@ pub async fn flash_firmware() -> Result<(), JsValue> {
     log("DFU interface claimed");
 
     // Get the firmware binary (embedded at build time)
-    let firmware_bytes = include_bytes!("../../firmware/target/thumbv7em-none-eabihf/release/firmware");
+    let firmware_bytes = include_bytes!("../../firmware/target/thumbv7em-none-eabihf/release/firmware.bin");
     log(&format!("Firmware size: {} bytes", firmware_bytes.len()));
 
     // DFU download process
