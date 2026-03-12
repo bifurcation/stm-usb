@@ -1,10 +1,10 @@
 # STM-USB
 
-WebUSB echo device firmware for STM32F411CEU6 with a web-based control panel.
+WebUSB echo device firmware for STM32F4xx with a web-based control panel.
 
 ## Project Structure
 
-- **firmware/** - Embassy-based STM32F411CEU6 firmware
+- **firmware/** - Embassy-based STM32F4xx firmware (supports STM32F411CE and STM32F412ZG)
 - **control/** - WASM web application for flashing and communication
 
 ## Requirements
@@ -59,13 +59,19 @@ Open http://localhost:8080 in Chrome or Edge (WebUSB requires a Chromium-based b
 
 This firmware has not been tested on real hardware. It assumes:
 
-| Assumption                | Value          | Code Location                                                      |
-|---------------------------|----------------|---------------------------------------------------------------------|
-| MCU                       | STM32F411CE    | [firmware/Cargo.toml:8](firmware/Cargo.toml#L8)                     |
-| HSE crystal frequency     | 25 MHz         | [firmware/src/main.rs:34](firmware/src/main.rs#L34)                 |
-| USB D- pin                | PA11           | [firmware/src/main.rs:64](firmware/src/main.rs#L64)                 |
-| USB D+ pin                | PA12           | [firmware/src/main.rs:63](firmware/src/main.rs#L63)                 |
-| VBUS detection            | Disabled       | [firmware/src/main.rs:58](firmware/src/main.rs#L58)                 |
+| Assumption            | Value                       | Code Location                                       |
+|-----------------------|-----------------------------|-----------------------------------------------------|
+| MCU                   | STM32F411CE or STM32F412ZG  | [Makefile:8](Makefile#L8) (`CHIP` variable)         |
+| HSE crystal frequency | 25 MHz                      | [firmware/src/main.rs:34](firmware/src/main.rs#L34) |
+| USB D- pin            | PA11                        | [firmware/src/main.rs:64](firmware/src/main.rs#L64) |
+| USB D+ pin            | PA12                        | [firmware/src/main.rs:63](firmware/src/main.rs#L63) |
+| VBUS detection        | Disabled                    | [firmware/src/main.rs:58](firmware/src/main.rs#L58) |
+
+To build for a different chip:
+
+```bash
+make firmware CHIP=stm32f412
+```
 
 ## USB IDs
 

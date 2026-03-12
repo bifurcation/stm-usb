@@ -7,7 +7,10 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 echo "=== Checking firmware crate ==="
 cd "$PROJECT_ROOT/firmware"
 cargo fmt --check
-cargo build --release
+echo "Building for stm32f411..."
+cargo build --release --features stm32f411
+echo "Building for stm32f412..."
+cargo build --release --features stm32f412
 
 echo "=== Checking control crate ==="
 cd "$PROJECT_ROOT/control"

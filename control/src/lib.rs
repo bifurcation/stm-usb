@@ -10,7 +10,7 @@ const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0x0001;
 const DFU_VENDOR_ID: u16 = 0x0483;
 const DFU_PRODUCT_ID: u16 = 0xDF11;
-const WEBUSB_INTERFACE: u8 = 0;
+const WEBUSB_INTERFACE: u8 = 1;
 const WEBUSB_ENDPOINT_IN: u8 = 1;
 const WEBUSB_ENDPOINT_OUT: u8 = 1;
 
@@ -183,7 +183,8 @@ pub async fn connect_device() -> Result<JsValue, JsValue> {
     }
 
     JsFuture::from(device.claim_interface(WEBUSB_INTERFACE.into())).await?;
-    log("Interface claimed, ready to communicate");
+    JsFuture::from(device.select_alternate_interface(WEBUSB_INTERFACE.into(), 0)).await?;
+    log("Ready to communicate");
 
     Ok(device.into())
 }

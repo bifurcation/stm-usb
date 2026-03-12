@@ -3,8 +3,12 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
+#[cfg(feature = "stm32f412")]
+use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
+#[cfg(feature = "stm32f412")]
+use embassy_time::Timer;
 use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
@@ -18,6 +22,25 @@ bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
 
+#[cfg(feature = "stm32f412")]
+#[embassy_executor::task]
+async fn blink_leds(
+    mut red: Output<'static>,
+    mut blue: Output<'static>,
+    mut green: Output<'static>,
+) {
+    loop {
+        red.set_high();
+        blue.set_high();
+        green.set_high();
+        Timer::after_millis(500).await;
+        red.set_low();
+        blue.set_low();
+        green.set_low();
+        Timer::after_millis(500).await;
+    }
+}
+
 const LANDING_PAGE_URL: &str = "localhost:8080";
 const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0x0001;
@@ -26,22 +49,42 @@ const PRODUCT: &str = "STM-USB Echo";
 const SERIAL: &str = "12345678";
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(#[allow(unused)] spawner: Spawner) {
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
-        config.rcc.hse = Some(Hse {
-            freq: embassy_stm32::time::Hertz(25_000_000),
-            mode: HseMode::Oscillator,
-        });
-        config.rcc.pll_src = PllSource::HSE;
-        config.rcc.pll = Some(Pll {
-            prediv: PllPreDiv::DIV25,
-            mul: PllMul::MUL336,
-            divp: Some(PllPDiv::DIV4),
-            divq: Some(PllQDiv::DIV7),
-            divr: None,
-        });
+        #[cfg(feature = "stm32f411")]
+        {
+            // Black Pill board: 25 MHz HSE crystal
+            config.rcc.hse = Some(Hse {
+                freq: embassy_stm32::time::Hertz(25_000_000),
+                mode: HseMode::Oscillator,
+            });
+            config.rcc.pll_src = PllSource::HSE;
+            config.rcc.pll = Some(Pll {
+                prediv: PllPreDiv::DIV25,
+                mul: PllMul::MUL336,
+                divp: Some(PllPDiv::DIV4),
+                divq: Some(PllQDiv::DIV7),
+                divr: None,
+            });
+        }
+        #[cfg(feature = "stm32f412")]
+        {
+            // Nucleo-144 board: 8 MHz from ST-LINK MCO
+            config.rcc.hse = Some(Hse {
+                freq: embassy_stm32::time::Hertz(8_000_000),
+                mode: HseMode::Bypass,
+            });
+            config.rcc.pll_src = PllSource::HSE;
+            config.rcc.pll = Some(Pll {
+                prediv: PllPreDiv::DIV8,
+                mul: PllMul::MUL336,
+                divp: Some(PllPDiv::DIV4),
+                divq: Some(PllQDiv::DIV7),
+                divr: None,
+            });
+        }
         config.rcc.ahb_pre = AHBPrescaler::DIV1;
         config.rcc.apb1_pre = APBPrescaler::DIV2;
         config.rcc.apb2_pre = APBPrescaler::DIV1;
@@ -50,6 +93,14 @@ async fn main(_spawner: Spawner) {
 
     let p = embassy_stm32::init(config);
     info!("USB echo device starting");
+
+    #[cfg(feature = "stm32f412")]
+    {
+        let red = Output::new(p.PB0, Level::Low, Speed::Low);
+        let blue = Output::new(p.PB7, Level::Low, Speed::Low);
+        let green = Output::new(p.PB14, Level::Low, Speed::Low);
+        spawner.spawn(blink_leds(red, blue, green)).unwrap();
+    }
 
     static EP_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
     let ep_out_buffer = EP_OUT_BUFFER.init([0u8; 256]);
@@ -70,9 +121,9 @@ async fn main(_spawner: Spawner) {
     config.manufacturer = Some(MANUFACTURER);
     config.product = Some(PRODUCT);
     config.serial_number = Some(SERIAL);
-    config.device_class = 0xFF; // Vendor-specific
-    config.device_sub_class = 0x00;
-    config.device_protocol = 0x00;
+    config.device_class = 0xEF; // Miscellaneous (required for IAD composite)
+    config.device_sub_class = 0x02; // Common Class
+    config.device_protocol = 0x01; // Interface Association Descriptor
 
     static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
@@ -114,9 +165,11 @@ async fn main(_spawner: Spawner) {
     };
 
     let mut usb = builder.build();
+    info!("USB device built, starting USB task");
     let usb_fut = usb.run();
 
     let echo_fut = async {
+        info!("Echo task started, waiting for USB connection");
         loop {
             // Wait for USB to be configured
             ep_out.wait_enabled().await;
@@ -134,12 +187,12 @@ async fn main(_spawner: Spawner) {
                                     if let Ok(s) = core::str::from_utf8(&line_buf) {
                                         info!("Received: {}", s);
                                     }
-                                    // Echo the line back with newline
-                                    if ep_in.write(&line_buf).await.is_err() {
-                                        info!("Write error");
-                                        break;
-                                    }
-                                    if ep_in.write(b"\r\n").await.is_err() {
+                                    // Build response: "ECHO " + line + "\r\n"
+                                    let mut response: Vec<u8, 270> = Vec::new();
+                                    response.extend_from_slice(b"ECHO ").ok();
+                                    response.extend_from_slice(&line_buf).ok();
+                                    response.extend_from_slice(b"\r\n").ok();
+                                    if ep_in.write(&response).await.is_err() {
                                         info!("Write error");
                                         break;
                                     }
@@ -163,5 +216,6 @@ async fn main(_spawner: Spawner) {
         }
     };
 
+    info!("Starting USB and echo tasks");
     embassy_futures::join::join(usb_fut, echo_fut).await;
 }
