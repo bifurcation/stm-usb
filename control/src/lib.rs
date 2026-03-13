@@ -21,7 +21,7 @@ const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0x0001;
 const DFU_VENDOR_ID: u16 = 0x0483;
 const DFU_PRODUCT_ID: u16 = 0xDF11;
-const WEBUSB_INTERFACE: u8 = 1;
+const WEBUSB_INTERFACE: u8 = 2; // Interface 0=WebUSB desc, 1=DFU runtime, 2=vendor bulk
 const WEBUSB_ENDPOINT_IN: u8 = 1;
 const WEBUSB_ENDPOINT_OUT: u8 = 1;
 
@@ -347,6 +347,26 @@ pub async fn connect_device() -> Result<JsValue, JsValue> {
         JsFuture::from(device.select_configuration(1)).await?;
     }
 
+    // Debug: enumerate interfaces
+    if let Some(config) = device.configuration() {
+        let interfaces = config.interfaces();
+        log(&format!("Found {} interfaces", interfaces.length()));
+        for i in 0..interfaces.length() {
+            let iface: web_sys::UsbInterface = interfaces.get(i);
+            let alts = iface.alternates();
+            for j in 0..alts.length() {
+                let alt: web_sys::UsbAlternateInterface = alts.get(j);
+                log(&format!(
+                    "  Interface {}, Alt {}: class=0x{:02x}, endpoints={}",
+                    iface.interface_number(),
+                    alt.alternate_setting(),
+                    alt.interface_class(),
+                    alt.endpoints().length()
+                ));
+            }
+        }
+    }
+
     JsFuture::from(device.claim_interface(WEBUSB_INTERFACE.into())).await?;
     JsFuture::from(device.select_alternate_interface(WEBUSB_INTERFACE.into(), 0)).await?;
     log("Ready to communicate");
@@ -395,6 +415,41 @@ pub async fn disconnect_device(device: &UsbDevice) -> Result<(), JsValue> {
     JsFuture::from(device.release_interface(WEBUSB_INTERFACE.into())).await?;
     JsFuture::from(device.close()).await?;
     log("Device disconnected");
+    Ok(())
+}
+
+/// Send DFU_DETACH to trigger device reset into DFU bootloader mode
+#[wasm_bindgen]
+pub async fn detach_to_dfu(device: &UsbDevice) -> Result<(), JsValue> {
+    log("Sending DFU_DETACH command...");
+
+    // DFU runtime interface is at index 1 (0=WebUSB desc, 1=DFU, 2=vendor bulk)
+    const DFU_INTERFACE: u8 = 1;
+    const DFU_DETACH: u8 = 0;
+    const DETACH_TIMEOUT: u16 = 1000;
+
+    // Claim the DFU interface
+    JsFuture::from(device.claim_interface(DFU_INTERFACE.into())).await?;
+
+    // Send DFU_DETACH control transfer
+    let params = UsbControlTransferParameters::new(
+        DFU_INTERFACE.into(),
+        UsbRecipient::Interface,
+        DFU_DETACH,
+        UsbRequestType::Class,
+        DETACH_TIMEOUT,
+    );
+
+    // DFU_DETACH has no data
+    let empty = js_sys::Uint8Array::new_with_length(0);
+    let _ = JsFuture::from(device.control_transfer_out_with_buffer_source(&params, &empty)?).await;
+
+    // Release interface and close - device will reset
+    let _ = JsFuture::from(device.release_interface(DFU_INTERFACE.into())).await;
+
+    log("DFU_DETACH sent. Device will reset to DFU bootloader.");
+    log("Wait a moment, then click 'Flash Firmware via DFU'.");
+
     Ok(())
 }
 

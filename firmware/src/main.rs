@@ -8,46 +8,87 @@ use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::Builder;
+use embassy_usb_dfu::consts::DfuAttributes;
+use embassy_usb_dfu::{usb_dfu, Control, DfuMarker, Reset};
 use heapless::Vec;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-/// Jump to the STM32 system bootloader (DFU mode)
-/// Uses SYSCFG to remap system memory to 0x00000000
-fn jump_to_bootloader() -> ! {
-    const SYSTEM_MEMORY: u32 = 0x1FFF_0000;
+// Magic value for DFU reset
+const DFU_MAGIC: u32 = 0xDEADBEEF;
 
-    // SYSCFG registers for memory remapping
-    const RCC_APB2ENR: *mut u32 = 0x4002_3844 as *mut u32;
-    const SYSCFG_MEMRMP: *mut u32 = 0x4001_3800 as *mut u32;
+/// Enable access to RTC backup domain
+fn enable_backup_access() {
+    use stm32_metapac::{PWR, RCC};
+
+    // Enable PWR clock
+    RCC.apb1enr().modify(|w| w.set_pwren(true));
+
+    // Enable backup domain access (set DBP bit)
+    PWR.cr1().modify(|w| w.set_dbp(true));
+}
+
+/// Check for DFU magic in RTC backup register
+fn check_dfu_magic() {
+    use stm32_metapac::RTC;
+
+    enable_backup_access();
+
+    let magic = RTC.bkpr(0).read().0;
+    if magic == DFU_MAGIC {
+        info!("DFU magic found, jumping to bootloader");
+        // Clear magic so we don't loop
+        RTC.bkpr(0).write_value(stm32_metapac::rtc::regs::Bkpr(0));
+        jump_to_bootloader();
+    }
+}
+
+/// Request DFU mode and trigger system reset
+fn request_dfu_reset() -> ! {
+    use stm32_metapac::RTC;
+
+    info!("Writing DFU magic and resetting...");
+
+    enable_backup_access();
+
+    // Write magic value to RTC backup register
+    RTC.bkpr(0).write_value(stm32_metapac::rtc::regs::Bkpr(DFU_MAGIC));
+
+    info!("Triggering system reset now");
+
+    // Trigger system reset
+    cortex_m::peripheral::SCB::sys_reset();
+}
+
+/// Jump to the STM32 system bootloader (DFU mode)
+/// Called after reset when magic value is detected
+fn jump_to_bootloader() -> ! {
+    use stm32_metapac::{RCC, SYSCFG};
+
+    // STM32F4 system memory base (ROM bootloader location)
+    const SYSTEM_MEMORY: u32 = 0x1FFF_0000;
 
     unsafe {
         // Disable interrupts
         cortex_m::interrupt::disable();
 
-        // Disable SysTick
-        const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
-        core::ptr::write_volatile(SYST_CSR, 0);
-
         // Enable SYSCFG clock
-        let rcc_apb2enr = core::ptr::read_volatile(RCC_APB2ENR);
-        core::ptr::write_volatile(RCC_APB2ENR, rcc_apb2enr | (1 << 14)); // SYSCFGEN bit
+        RCC.apb2enr().modify(|w| w.set_syscfgen(true));
 
         // Remap system memory to 0x00000000
-        // SYSCFG_MEMRMP: MEM_MODE = 01 (System Flash mapped at 0x00000000)
-        core::ptr::write_volatile(SYSCFG_MEMRMP, 0x01);
+        SYSCFG.memrm().write(|w| w.set_mem_mode(0x01));
 
-        // Read the bootloader's initial stack pointer and reset vector
+        // Read bootloader's stack pointer and reset vector
         let bootloader_stack = core::ptr::read_volatile(SYSTEM_MEMORY as *const u32);
         let bootloader_reset = core::ptr::read_volatile((SYSTEM_MEMORY + 4) as *const u32);
 
-        // Set MSP to bootloader's stack pointer and jump
+        // Jump to bootloader
         asm!(
             "msr msp, {0}",
             "bx {1}",
@@ -55,6 +96,26 @@ fn jump_to_bootloader() -> ! {
             in(reg) bootloader_reset,
             options(noreturn)
         );
+    }
+}
+
+/// No-op DFU marker - we jump directly to ROM bootloader, no need to mark anything
+struct RomBootloaderMarker;
+
+impl DfuMarker for RomBootloaderMarker {
+    fn mark_dfu(&mut self) {
+        // No-op: we don't need to mark anything since we jump directly to ROM bootloader
+        info!("DFU detach requested");
+    }
+}
+
+/// Custom reset that triggers DFU mode via system reset
+struct DfuReset;
+
+impl Reset for DfuReset {
+    fn sys_reset(&self) {
+        info!("Requesting DFU mode and resetting...");
+        request_dfu_reset();
     }
 }
 
@@ -90,6 +151,9 @@ const SERIAL: &str = "12345678";
 
 #[embassy_executor::main]
 async fn main(#[allow(unused)] spawner: Spawner) {
+    // Check for DFU magic early (before full init but after PAC is available)
+    check_dfu_magic();
+
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -194,13 +258,22 @@ async fn main(#[allow(unused)] spawner: Spawner) {
     builder.msos_descriptor(windows_version::WIN8_1, 2);
     builder.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
 
+    // Add DFU runtime interface - handles DFU_DETACH command from host
+    static DFU_CONTROL: StaticCell<Control<RomBootloaderMarker, DfuReset>> = StaticCell::new();
+    let dfu_control = DFU_CONTROL.init(Control::new(
+        RomBootloaderMarker,
+        DfuAttributes::CAN_DOWNLOAD | DfuAttributes::WILL_DETACH,
+        DfuReset,
+    ));
+    usb_dfu(&mut builder, dfu_control, Duration::from_millis(2500), |_| {});
+
     // Create vendor-specific function with bulk endpoints
     let (mut ep_out, mut ep_in) = {
         let mut function = builder.function(0xFF, 0x00, 0x00);
         let mut interface = function.interface();
         let mut alt = interface.alt_setting(0xFF, 0x00, 0x00, None);
-        let ep_out = alt.endpoint_bulk_out(64);
-        let ep_in = alt.endpoint_bulk_in(64);
+        let ep_out = alt.endpoint_bulk_out(None, 64);
+        let ep_in = alt.endpoint_bulk_in(None, 64);
         (ep_out, ep_in)
     };
 
@@ -226,14 +299,6 @@ async fn main(#[allow(unused)] spawner: Spawner) {
                                 if !line_buf.is_empty() {
                                     if let Ok(s) = core::str::from_utf8(&line_buf) {
                                         info!("Received: {}", s);
-                                    }
-                                    // Check for DFU command
-                                    if line_buf.as_slice() == b"DFU" {
-                                        info!("DFU command received, jumping to bootloader");
-                                        let _ = ep_in.write(b"Entering DFU mode...\r\n").await;
-                                        // Small delay to let USB transfer complete
-                                        Timer::after_millis(100).await;
-                                        jump_to_bootloader();
                                     }
                                     // Build response: "ECHO " + line + "\r\n"
                                     let mut response: Vec<u8, 270> = Vec::new();

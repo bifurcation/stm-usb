@@ -163,6 +163,7 @@
         <div id="connectionStatus" class="status disconnected">Disconnected</div>
         <button id="connectBtn" onclick="connectDevice()">Connect to Device</button>
         <button id="disconnectBtn" onclick="disconnectDevice()" disabled>Disconnect</button>
+        <button id="dfuBtn" onclick="detachToDfu()" disabled class="danger">Enter DFU Mode</button>
 
         <div style="margin-top: 20px;">
             <label for="textInput">Send text to device:</label>
@@ -186,7 +187,8 @@
             connect_device,
             send_text,
             receive_text,
-            disconnect_device
+            disconnect_device,
+            detach_to_dfu
         } from './pkg/control.js';
 
         let device = null;
@@ -240,6 +242,19 @@
             updateConnectionStatus(false);
         };
 
+        window.detachToDfu = async function() {
+            if (!device) return;
+            stopReceiveLoop();
+            try {
+                await detach_to_dfu(device);
+                device = null;
+                updateConnectionStatus(false);
+            } catch (e) {
+                console.error('DFU detach error:', e);
+                log('Error: ' + e);
+            }
+        };
+
         window.sendText = async function() {
             const input = document.getElementById('textInput');
             const text = input.value.trim();
@@ -271,6 +286,7 @@
             const status = document.getElementById('connectionStatus');
             const connectBtn = document.getElementById('connectBtn');
             const disconnectBtn = document.getElementById('disconnectBtn');
+            const dfuBtn = document.getElementById('dfuBtn');
             const textInput = document.getElementById('textInput');
             const sendBtn = document.getElementById('sendBtn');
 
@@ -279,6 +295,7 @@
                 status.textContent = 'Connected';
                 connectBtn.disabled = true;
                 disconnectBtn.disabled = false;
+                dfuBtn.disabled = false;
                 textInput.disabled = false;
                 sendBtn.disabled = false;
                 textInput.focus();
@@ -287,6 +304,7 @@
                 status.textContent = 'Disconnected';
                 connectBtn.disabled = false;
                 disconnectBtn.disabled = true;
+                dfuBtn.disabled = true;
                 textInput.disabled = true;
                 sendBtn.disabled = true;
             }
