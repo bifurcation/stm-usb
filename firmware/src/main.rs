@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 
+use core::arch::asm;
 use defmt::info;
 use embassy_executor::Spawner;
 #[cfg(feature = "stm32f412")]
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
-#[cfg(feature = "stm32f412")]
 use embassy_time::Timer;
 use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
 use embassy_usb::driver::EndpointError;
@@ -17,6 +17,46 @@ use embassy_usb::Builder;
 use heapless::Vec;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
+
+/// Jump to the STM32 system bootloader (DFU mode)
+/// Uses SYSCFG to remap system memory to 0x00000000
+fn jump_to_bootloader() -> ! {
+    const SYSTEM_MEMORY: u32 = 0x1FFF_0000;
+
+    // SYSCFG registers for memory remapping
+    const RCC_APB2ENR: *mut u32 = 0x4002_3844 as *mut u32;
+    const SYSCFG_MEMRMP: *mut u32 = 0x4001_3800 as *mut u32;
+
+    unsafe {
+        // Disable interrupts
+        cortex_m::interrupt::disable();
+
+        // Disable SysTick
+        const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
+        core::ptr::write_volatile(SYST_CSR, 0);
+
+        // Enable SYSCFG clock
+        let rcc_apb2enr = core::ptr::read_volatile(RCC_APB2ENR);
+        core::ptr::write_volatile(RCC_APB2ENR, rcc_apb2enr | (1 << 14)); // SYSCFGEN bit
+
+        // Remap system memory to 0x00000000
+        // SYSCFG_MEMRMP: MEM_MODE = 01 (System Flash mapped at 0x00000000)
+        core::ptr::write_volatile(SYSCFG_MEMRMP, 0x01);
+
+        // Read the bootloader's initial stack pointer and reset vector
+        let bootloader_stack = core::ptr::read_volatile(SYSTEM_MEMORY as *const u32);
+        let bootloader_reset = core::ptr::read_volatile((SYSTEM_MEMORY + 4) as *const u32);
+
+        // Set MSP to bootloader's stack pointer and jump
+        asm!(
+            "msr msp, {0}",
+            "bx {1}",
+            in(reg) bootloader_stack,
+            in(reg) bootloader_reset,
+            options(noreturn)
+        );
+    }
+}
 
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
@@ -186,6 +226,14 @@ async fn main(#[allow(unused)] spawner: Spawner) {
                                 if !line_buf.is_empty() {
                                     if let Ok(s) = core::str::from_utf8(&line_buf) {
                                         info!("Received: {}", s);
+                                    }
+                                    // Check for DFU command
+                                    if line_buf.as_slice() == b"DFU" {
+                                        info!("DFU command received, jumping to bootloader");
+                                        let _ = ep_in.write(b"Entering DFU mode...\r\n").await;
+                                        // Small delay to let USB transfer complete
+                                        Timer::after_millis(100).await;
+                                        jump_to_bootloader();
                                     }
                                     // Build response: "ECHO " + line + "\r\n"
                                     let mut response: Vec<u8, 270> = Vec::new();

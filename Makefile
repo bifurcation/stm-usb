@@ -20,7 +20,7 @@ WASM_PKG     := $(WWW_DIR)/pkg/control.js
 FIRMWARE_SRC := $(wildcard $(FIRMWARE_DIR)/src/*.rs) $(FIRMWARE_DIR)/Cargo.toml
 CONTROL_SRC  := $(wildcard $(CONTROL_DIR)/src/*.rs) $(CONTROL_DIR)/Cargo.toml
 
-.PHONY: all firmware wasm serve clean check install-hooks
+.PHONY: all firmware wasm serve clean check install-hooks flash
 
 all: firmware wasm
 
@@ -55,3 +55,6 @@ check:
 
 install-hooks:
 	ln -sf ../../scripts/pre-push .git/hooks/pre-push
+
+flash:
+	cd $(FIRMWARE_DIR) && cargo run

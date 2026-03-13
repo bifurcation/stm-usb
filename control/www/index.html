@@ -109,6 +109,32 @@
             padding: 10px 15px;
             margin: 10px 0;
         }
+        .progress-container {
+            background: #0f0f23;
+            border-radius: 4px;
+            height: 24px;
+            margin: 15px 0;
+            overflow: hidden;
+            display: none;
+        }
+        .progress-container.active {
+            display: block;
+        }
+        .progress-bar {
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            height: 100%;
+            width: 0%;
+            transition: width 0.1s ease-out;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .progress-text {
+            color: #1a1a2e;
+            font-weight: bold;
+            font-size: 12px;
+            text-shadow: 0 0 2px rgba(255,255,255,0.5);
+        }
     </style>
 </head>
 <body>
@@ -125,6 +151,11 @@
             </ol>
         </div>
         <button id="flashBtn" class="danger" onclick="flashFirmware()">Flash Firmware via DFU</button>
+        <div id="progressContainer" class="progress-container">
+            <div id="progressBar" class="progress-bar">
+                <span id="progressText" class="progress-text">0%</span>
+            </div>
+        </div>
     </div>
 
     <div class="section">
