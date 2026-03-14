@@ -5,8 +5,8 @@ edition = "2021"
 
 [features]
 default = ["stm32f412"]
-stm32f411 = ["embassy-stm32/stm32f411ce", "stm32-metapac/stm32f411ce"]
-stm32f412 = ["embassy-stm32/stm32f412zg", "stm32-metapac/stm32f412zg"]
+stm32f411 = ["embassy-stm32/stm32f411ce"]
+stm32f412 = ["embassy-stm32/stm32f412zg"]
 
 [dependencies]
 embassy-executor = { version = "0.7", features = ["arch-cortex-m", "executor-thread"] }
@@ -24,7 +24,6 @@ defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 static_cell = "2"
 heapless = "0.8"
-stm32-metapac = { version = "19", features = ["pac"] }
 
 [profile.release]
 debug = 2

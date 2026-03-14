@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::arch::asm;
+use core::mem::MaybeUninit;
 use defmt::info;
 use embassy_executor::Spawner;
 #[cfg(feature = "stm32f412")]
@@ -20,102 +20,72 @@ use heapless::Vec;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-// Magic value for DFU reset
-const DFU_MAGIC: u32 = 0xDEADBEEF;
+// Magic value for DFU reset - unlikely to occur naturally in uninitialized RAM
+const DFU_MAGIC: u32 = 0xDEAD_BEEF;
 
-/// Enable access to RTC backup domain
-fn enable_backup_access() {
-    use stm32_metapac::{PWR, RCC};
+// STM32F4 system bootloader address - see AN2606
+const SYSTEM_MEMORY_BASE: u32 = 0x1FFF_0000;
 
-    // Enable PWR clock
-    RCC.apb1enr().modify(|w| w.set_pwren(true));
+// Placed in .uninit so startup code does not zero it
+#[link_section = ".uninit.DFU_MAGIC"]
+static mut DFU_FLAG: MaybeUninit<u32> = MaybeUninit::uninit();
 
-    // Enable backup domain access (set DBP bit)
-    PWR.cr1().modify(|w| w.set_dbp(true));
-}
-
-/// Check for DFU magic in RTC backup register
-fn check_dfu_magic() {
-    use stm32_metapac::RTC;
-
-    enable_backup_access();
-
-    let magic = RTC.bkpr(0).read().0;
-    if magic == DFU_MAGIC {
-        info!("DFU magic found, jumping to bootloader");
+/// Runs before RAM initialization on every boot.
+/// If the magic value is present, remaps system memory and jumps to the ST ROM bootloader.
+#[cortex_m_rt::pre_init]
+unsafe fn check_bootloader_magic() {
+    if DFU_FLAG.assume_init() == DFU_MAGIC {
         // Clear magic so we don't loop
-        RTC.bkpr(0).write_value(stm32_metapac::rtc::regs::Bkpr(0));
-        jump_to_bootloader();
+        DFU_FLAG.as_mut_ptr().write(0);
+
+        // The ROM bootloader expects its own vector table mapped at 0x00000000.
+        // Without this remap it crashes silently before USB initialises.
+
+        // Enable SYSCFG clock (RCC_APB2ENR bit 14)
+        let rcc_apb2enr = 0x4002_3844 as *mut u32;
+        rcc_apb2enr.write_volatile(0x0000_4000);
+
+        // Remap system memory to 0x00000000 (SYSCFG_MEMRMP = 1)
+        let syscfg_memrmp = 0x4001_3800 as *mut u32;
+        syscfg_memrmp.write_volatile(0x0000_0001);
+
+        // Jump to ROM bootloader (reads SP and PC from vector table)
+        cortex_m::asm::bootload(SYSTEM_MEMORY_BASE as *const u32);
     }
 }
 
-/// Request DFU mode and trigger system reset
-fn request_dfu_reset() -> ! {
-    use stm32_metapac::RTC;
-
-    info!("Writing DFU magic and resetting...");
-
-    enable_backup_access();
-
-    // Write magic value to RTC backup register
-    RTC.bkpr(0).write_value(stm32_metapac::rtc::regs::Bkpr(DFU_MAGIC));
-
-    info!("Triggering system reset now");
-
-    // Trigger system reset
-    cortex_m::peripheral::SCB::sys_reset();
-}
-
-/// Jump to the STM32 system bootloader (DFU mode)
-/// Called after reset when magic value is detected
-fn jump_to_bootloader() -> ! {
-    use stm32_metapac::{RCC, SYSCFG};
-
-    // STM32F4 system memory base (ROM bootloader location)
-    const SYSTEM_MEMORY: u32 = 0x1FFF_0000;
-
-    unsafe {
-        // Disable interrupts
-        cortex_m::interrupt::disable();
-
-        // Enable SYSCFG clock
-        RCC.apb2enr().modify(|w| w.set_syscfgen(true));
-
-        // Remap system memory to 0x00000000
-        SYSCFG.memrm().write(|w| w.set_mem_mode(0x01));
-
-        // Read bootloader's stack pointer and reset vector
-        let bootloader_stack = core::ptr::read_volatile(SYSTEM_MEMORY as *const u32);
-        let bootloader_reset = core::ptr::read_volatile((SYSTEM_MEMORY + 4) as *const u32);
-
-        // Jump to bootloader
-        asm!(
-            "msr msp, {0}",
-            "bx {1}",
-            in(reg) bootloader_stack,
-            in(reg) bootloader_reset,
-            options(noreturn)
-        );
-    }
-}
-
-/// No-op DFU marker - we jump directly to ROM bootloader, no need to mark anything
+/// DFU marker that writes magic to .uninit RAM
 struct RomBootloaderMarker;
 
 impl DfuMarker for RomBootloaderMarker {
     fn mark_dfu(&mut self) {
-        // No-op: we don't need to mark anything since we jump directly to ROM bootloader
-        info!("DFU detach requested");
+        info!("DFU detach requested, writing magic");
+        unsafe {
+            DFU_FLAG.as_mut_ptr().write(DFU_MAGIC);
+        }
     }
 }
 
-/// Custom reset that triggers DFU mode via system reset
-struct DfuReset;
+/// Custom reset that disables USB before resetting.
+/// This gives the host time to see the disconnect before bootloader re-enumerates.
+struct ResetToBootloader;
 
-impl Reset for DfuReset {
+impl Reset for ResetToBootloader {
     fn sys_reset(&self) {
-        info!("Requesting DFU mode and resetting...");
-        request_dfu_reset();
+        info!("Disabling USB and resetting to bootloader");
+        unsafe {
+            // Gate the OTG_FS clock via RCC_AHB2ENR (bit 7).
+            // This drops D+ low, which the host sees as a cable unplug.
+            let rcc_ahb2enr = 0x4002_3834 as *mut u32;
+            let val = rcc_ahb2enr.read_volatile();
+            rcc_ahb2enr.write_volatile(val & !(1 << 7));
+
+            // Busy-wait ~5 ms at 84 MHz to give the host time to register
+            // the disconnect before we reset
+            cortex_m::asm::delay(84_000 * 5);
+        }
+
+        cortex_m::peripheral::SCB::sys_reset()
     }
 }
 
@@ -151,9 +121,6 @@ const SERIAL: &str = "12345678";
 
 #[embassy_executor::main]
 async fn main(#[allow(unused)] spawner: Spawner) {
-    // Check for DFU magic early (before full init but after PAC is available)
-    check_dfu_magic();
-
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -259,11 +226,11 @@ async fn main(#[allow(unused)] spawner: Spawner) {
     builder.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
 
     // Add DFU runtime interface - handles DFU_DETACH command from host
-    static DFU_CONTROL: StaticCell<Control<RomBootloaderMarker, DfuReset>> = StaticCell::new();
+    static DFU_CONTROL: StaticCell<Control<RomBootloaderMarker, ResetToBootloader>> = StaticCell::new();
     let dfu_control = DFU_CONTROL.init(Control::new(
         RomBootloaderMarker,
         DfuAttributes::CAN_DOWNLOAD | DfuAttributes::WILL_DETACH,
-        DfuReset,
+        ResetToBootloader,
     ));
     usb_dfu(&mut builder, dfu_control, Duration::from_millis(2500), |_| {});
 
