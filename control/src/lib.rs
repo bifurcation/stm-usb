@@ -65,35 +65,36 @@ impl<F: Future> Future for WasmFuture<F> {
 // SAFETY: WASM is single-threaded
 unsafe impl<F> Send for WasmFuture<F> {}
 
-// Error type that implements From<DfuError> and From<io::Error>
-#[derive(Debug)]
-enum FlashError {
-    Dfu(DfuError),
-    Io(io::Error),
-    Js(String),
+// Error type for DFU operations
+struct FlashError(String);
+
+impl std::fmt::Debug for FlashError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 impl From<DfuError> for FlashError {
     fn from(e: DfuError) -> Self {
-        FlashError::Dfu(e)
+        FlashError(format!("{:?}", e))
     }
 }
 
 impl From<io::Error> for FlashError {
     fn from(e: io::Error) -> Self {
-        FlashError::Io(e)
+        FlashError(e.to_string())
     }
 }
 
 impl From<JsValue> for FlashError {
     fn from(e: JsValue) -> Self {
-        FlashError::Js(format!("{:?}", e))
+        FlashError(format!("{:?}", e))
     }
 }
 
 impl From<String> for FlashError {
     fn from(e: String) -> Self {
-        FlashError::Js(e)
+        FlashError(e)
     }
 }
 
@@ -137,10 +138,10 @@ impl dfu_core::asynchronous::DfuAsyncIo for WebUsbDfu {
             let transfer: web_sys::UsbInTransferResult =
                 JsFuture::from(device.control_transfer_in(&params, len as u16))
                     .await
-                    .map_err(|e| FlashError::Js(format!("{:?}", e)))?;
+                    .map_err(|e| FlashError(format!("{:?}", e)))?;
 
             if transfer.status() != UsbTransferStatus::Ok {
-                return Err(FlashError::Js("Control transfer IN failed".into()));
+                return Err(FlashError("Control transfer IN failed".into()));
             }
 
             if let Some(data) = transfer.data() {
@@ -193,13 +194,13 @@ impl dfu_core::asynchronous::DfuAsyncIo for WebUsbDfu {
             let transfer: web_sys::UsbOutTransferResult = JsFuture::from(
                 device
                     .control_transfer_out_with_buffer_source(&params, &data)
-                    .map_err(|e| FlashError::Js(format!("{:?}", e)))?,
+                    .map_err(|e| FlashError(format!("{:?}", e)))?,
             )
             .await
-            .map_err(|e| FlashError::Js(format!("{:?}", e)))?;
+            .map_err(|e| FlashError(format!("{:?}", e)))?;
 
             if transfer.status() != UsbTransferStatus::Ok {
-                return Err(FlashError::Js("Control transfer OUT failed".into()));
+                return Err(FlashError("Control transfer OUT failed".into()));
             }
 
             // Update progress bar for data blocks

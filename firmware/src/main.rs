@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(static_mut_refs)] // DFU_FLAG access is safe: single-threaded pre_init context
 
 use core::mem::MaybeUninit;
 use defmt::info;
