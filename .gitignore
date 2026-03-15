@@ -4,3 +4,5 @@
 /control/www/pkg
 /control/www/firmware.bin
 Cargo.lock
+*.swp
+.claude
