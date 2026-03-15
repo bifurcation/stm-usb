@@ -4,109 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>STM-USB Control Panel</title>
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #1a1a2e;
-            color: #eee;
-        }
-        h1 {
-            color: #00d4ff;
-            border-bottom: 2px solid #00d4ff;
-            padding-bottom: 10px;
-        }
-        .section {
-            background: #16213e;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        button {
-            background: #00d4ff;
-            color: #1a1a2e;
-            border: none;
-            padding: 12px 24px;
-            font-size: 16px;
-            font-weight: bold;
-            border-radius: 4px;
-            cursor: pointer;
-            margin: 5px;
-            transition: background 0.2s;
-        }
-        button:hover {
-            background: #00b8e6;
-        }
-        button:disabled {
-            background: #555;
-            cursor: not-allowed;
-        }
-        input[type="text"] {
-            background: #0f0f23;
-            border: 1px solid #333;
-            color: #eee;
-            padding: 10px;
-            font-size: 16px;
-            border-radius: 4px;
-            width: 100%;
-            margin-bottom: 10px;
-        }
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #00d4ff;
-        }
-        textarea {
-            background: #0f0f23;
-            border: 1px solid #333;
-            color: #0f0;
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 14px;
-            padding: 10px;
-            border-radius: 4px;
-            width: 100%;
-            height: 300px;
-            resize: vertical;
-        }
-        .input-group {
-            display: flex;
-            gap: 10px;
-        }
-        .input-group input {
-            flex: 1;
-            margin-bottom: 0;
-        }
-        .progress-container {
-            background: #0f0f23;
-            border-radius: 4px;
-            height: 24px;
-            margin: 15px 0;
-            overflow: hidden;
-            display: none;
-        }
-        .progress-container.active {
-            display: block;
-        }
-        .progress-bar {
-            background: linear-gradient(90deg, #00d4ff, #00ff88);
-            height: 100%;
-            width: 0%;
-            transition: width 0.1s ease-out;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .progress-text {
-            color: #1a1a2e;
-            font-weight: bold;
-            font-size: 12px;
-            text-shadow: 0 0 2px rgba(255,255,255,0.5);
-        }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <h1>STM-USB Control Panel</h1>
@@ -121,7 +19,7 @@
             </div>
         </div>
 
-        <div style="margin-top: 20px;">
+        <div class="send-group">
             <div class="input-group">
                 <input type="text" id="textInput" placeholder="Type a message and press Enter or Send"
                        onkeypress="handleKeyPress(event)" disabled>
@@ -129,7 +27,7 @@
             </div>
         </div>
 
-        <textarea id="output" readonly style="margin-top: 20px;"></textarea>
+        <textarea id="output" readonly></textarea>
     </div>
 
     <script type="module">

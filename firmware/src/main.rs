@@ -2,23 +2,21 @@
 #![no_main]
 #![allow(static_mut_refs)] // DFU_FLAG access is safe: single-threaded pre_init context
 
+mod echo;
+
 use core::mem::MaybeUninit;
 use defmt::info;
 use embassy_executor::Spawner;
-#[cfg(feature = "stm32f412")]
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::pac;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
 use embassy_time::{Duration, Timer};
 use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
-use embassy_usb::driver::EndpointError;
-use embassy_usb::driver::{Endpoint, EndpointIn, EndpointOut};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::Builder;
 use embassy_usb_dfu::consts::DfuAttributes;
 use embassy_usb_dfu::{usb_dfu, Control, DfuMarker, Reset};
-use heapless::Vec;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -88,21 +86,12 @@ bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
 
-#[cfg(feature = "stm32f412")]
 #[embassy_executor::task]
-async fn blink_leds(
-    mut red: Output<'static>,
-    mut blue: Output<'static>,
-    mut green: Output<'static>,
-) {
+async fn blink_led(mut led: Output<'static>) {
     loop {
-        red.set_high();
-        blue.set_high();
-        green.set_high();
+        led.set_high();
         Timer::after_millis(500).await;
-        red.set_low();
-        blue.set_low();
-        green.set_low();
+        led.set_low();
         Timer::after_millis(500).await;
     }
 }
@@ -116,6 +105,7 @@ const SERIAL: &str = "12345678";
 
 #[embassy_executor::main]
 async fn main(#[allow(unused)] spawner: Spawner) {
+    // Configure clocks
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -160,14 +150,19 @@ async fn main(#[allow(unused)] spawner: Spawner) {
     let p = embassy_stm32::init(config);
     info!("USB echo device starting");
 
+    // Spawn a task to blink an LED to show we're alive
+    #[cfg(feature = "stm32f411")]
+    {
+        let led = Output::new(p.PC13, Level::Low, Speed::Low);
+        spawner.spawn(blink_led(led)).unwrap();
+    }
     #[cfg(feature = "stm32f412")]
     {
-        let red = Output::new(p.PB0, Level::Low, Speed::Low);
-        let blue = Output::new(p.PB7, Level::Low, Speed::Low);
-        let green = Output::new(p.PB14, Level::Low, Speed::Low);
-        spawner.spawn(blink_leds(red, blue, green)).unwrap();
+        let led = Output::new(p.PB14, Level::Low, Speed::Low); // Green LED
+        spawner.spawn(blink_led(led)).unwrap();
     }
 
+    // Configure USB
     static EP_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
     let ep_out_buffer = EP_OUT_BUFFER.init([0u8; 256]);
 
@@ -230,7 +225,7 @@ async fn main(#[allow(unused)] spawner: Spawner) {
     usb_dfu(&mut builder, dfu_control, Duration::from_millis(2500), |_| {});
 
     // Create vendor-specific function with bulk endpoints
-    let (mut ep_out, mut ep_in) = {
+    let (ep_out, ep_in) = {
         let mut function = builder.function(0xFF, 0x00, 0x00);
         let mut interface = function.interface();
         let mut alt = interface.alt_setting(0xFF, 0x00, 0x00, None);
@@ -241,104 +236,8 @@ async fn main(#[allow(unused)] spawner: Spawner) {
 
     let mut usb = builder.build();
     info!("USB device built, starting USB task");
-    let usb_fut = usb.run();
 
-    // Ready signal for flow control (0x0000)
-    const READY_SIGNAL: [u8; 2] = [0x00, 0x00];
-
-    let echo_fut = async {
-        info!("Echo task started, waiting for USB connection");
-        loop {
-            // Wait for USB to be configured
-            ep_out.wait_enabled().await;
-            info!("USB configured, ready for data");
-
-            // State machine for length-prefixed streaming echo
-            enum State {
-                WaitingForLength { buf: [u8; 2], pos: usize },
-                StreamingPayload { remaining: u16 },
-            }
-
-            let mut state = State::WaitingForLength { buf: [0; 2], pos: 0 };
-            let mut read_buf = [0u8; 64];
-            let mut out_buf: Vec<u8, 64> = Vec::new();
-
-            'outer: loop {
-                match ep_out.read(&mut read_buf).await {
-                    Ok(n) => {
-                        let mut i = 0;
-                        while i < n {
-                            match &mut state {
-                                State::WaitingForLength { buf, pos } => {
-                                    // Accumulate length bytes
-                                    buf[*pos] = read_buf[i];
-                                    *pos += 1;
-                                    i += 1;
-
-                                    if *pos == 2 {
-                                        let len = u16::from_le_bytes(*buf);
-                                        info!("Echoing {} bytes of data...", len);
-
-                                        // Write response length (input + 5 for "ECHO ")
-                                        let response_len = len.saturating_add(5);
-                                        out_buf.clear();
-                                        out_buf.extend_from_slice(&response_len.to_le_bytes()).ok();
-                                        out_buf.extend_from_slice(b"ECHO ").ok();
-
-                                        state = State::StreamingPayload { remaining: len };
-                                    }
-                                }
-                                State::StreamingPayload { remaining } => {
-                                    // Stream bytes from input to output
-                                    let bytes_to_copy = (n - i).min(*remaining as usize);
-                                    for &byte in &read_buf[i..i + bytes_to_copy] {
-                                        if out_buf.is_full() {
-                                            if ep_in.write(&out_buf).await.is_err() {
-                                                info!("Write error");
-                                                break 'outer;
-                                            }
-                                            out_buf.clear();
-                                        }
-                                        // Buffer was just cleared or has space, push cannot fail
-                                        let _ = out_buf.push(byte);
-                                    }
-                                    i += bytes_to_copy;
-                                    *remaining -= bytes_to_copy as u16;
-
-                                    // Message complete - flush remaining output
-                                    if *remaining == 0 {
-                                        if !out_buf.is_empty() {
-                                            if ep_in.write(&out_buf).await.is_err() {
-                                                info!("Write error");
-                                                break 'outer;
-                                            }
-                                            out_buf.clear();
-                                        }
-                                        info!("... complete");
-                                        state = State::WaitingForLength { buf: [0; 2], pos: 0 };
-                                    }
-                                }
-                            }
-                        }
-
-                        // Send ready signal after processing each USB packet
-                        if ep_in.write(&READY_SIGNAL).await.is_err() {
-                            info!("Write error sending ready");
-                            break 'outer;
-                        }
-                    }
-                    Err(EndpointError::BufferOverflow) => {
-                        info!("Buffer overflow");
-                    }
-                    Err(EndpointError::Disabled) => {
-                        info!("USB disconnected");
-                        break;
-                    }
-                }
-            }
-        }
-    };
-
+    // Spawn tasks to run the USB protocol itself and the echo logic
     info!("Starting USB and echo tasks");
-    embassy_futures::join::join(usb_fut, echo_fut).await;
+    embassy_futures::join::join(usb.run(), echo::run(ep_in, ep_out)).await;
 }
