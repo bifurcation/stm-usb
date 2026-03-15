@@ -26,6 +26,11 @@ const DFU_MAGIC: u32 = 0xDEAD_BEEF;
 // STM32F4 system bootloader address - see AN2606
 const SYSTEM_MEMORY_BASE: u32 = 0x1FFF_0000;
 
+// STM32F4 register addresses for bootloader entry and USB control
+const RCC_APB2ENR: *mut u32 = 0x4002_3844 as *mut u32;
+const RCC_AHB2ENR: *mut u32 = 0x4002_3834 as *mut u32;
+const SYSCFG_MEMRMP: *mut u32 = 0x4001_3800 as *mut u32;
+
 // Placed in .uninit so startup code does not zero it
 #[link_section = ".uninit.DFU_MAGIC"]
 static mut DFU_FLAG: MaybeUninit<u32> = MaybeUninit::uninit();
@@ -42,12 +47,10 @@ unsafe fn check_bootloader_magic() {
         // Without this remap it crashes silently before USB initialises.
 
         // Enable SYSCFG clock (RCC_APB2ENR bit 14)
-        let rcc_apb2enr = 0x4002_3844 as *mut u32;
-        rcc_apb2enr.write_volatile(0x0000_4000);
+        RCC_APB2ENR.write_volatile(0x0000_4000);
 
         // Remap system memory to 0x00000000 (SYSCFG_MEMRMP = 1)
-        let syscfg_memrmp = 0x4001_3800 as *mut u32;
-        syscfg_memrmp.write_volatile(0x0000_0001);
+        SYSCFG_MEMRMP.write_volatile(0x0000_0001);
 
         // Jump to ROM bootloader (reads SP and PC from vector table)
         cortex_m::asm::bootload(SYSTEM_MEMORY_BASE as *const u32);
@@ -76,9 +79,8 @@ impl Reset for ResetToBootloader {
         unsafe {
             // Gate the OTG_FS clock via RCC_AHB2ENR (bit 7).
             // This drops D+ low, which the host sees as a cable unplug.
-            let rcc_ahb2enr = 0x4002_3834 as *mut u32;
-            let val = rcc_ahb2enr.read_volatile();
-            rcc_ahb2enr.write_volatile(val & !(1 << 7));
+            let val = RCC_AHB2ENR.read_volatile();
+            RCC_AHB2ENR.write_volatile(val & !(1 << 7));
 
             // Busy-wait ~5 ms at 84 MHz to give the host time to register
             // the disconnect before we reset
@@ -297,19 +299,15 @@ async fn main(#[allow(unused)] spawner: Spawner) {
                                     // Stream bytes from input to output
                                     let bytes_to_copy = (n - i).min(*remaining as usize);
                                     for &byte in &read_buf[i..i + bytes_to_copy] {
-                                        if out_buf.push(byte).is_err() || out_buf.is_full() {
-                                            // Flush full buffer
+                                        if out_buf.is_full() {
                                             if ep_in.write(&out_buf).await.is_err() {
                                                 info!("Write error");
                                                 break 'outer;
                                             }
                                             out_buf.clear();
-                                            // If push failed, push now to empty buffer
-                                            if out_buf.len() == 0 && out_buf.push(byte).is_err() {
-                                                info!("Buffer error");
-                                                break 'outer;
-                                            }
                                         }
+                                        // Buffer was just cleared or has space, push cannot fail
+                                        let _ = out_buf.push(byte);
                                     }
                                     i += bytes_to_copy;
                                     *remaining -= bytes_to_copy as u16;
