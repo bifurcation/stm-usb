@@ -10,7 +10,7 @@ stm32f412 = ["embassy-stm32/stm32f412zg"]
 
 [dependencies]
 embassy-executor = { version = "0.7", features = ["arch-cortex-m", "executor-thread"] }
-embassy-stm32 = { version = "0.5", features = ["time-driver-any", "memory-x"] }
+embassy-stm32 = { version = "0.5", features = ["time-driver-any", "memory-x", "unstable-pac"] }
 embassy-usb = { version = "0.5" }
 embassy-usb-dfu = { version = "0.2", features = ["application", "cortex-m"] }
 embassy-sync = { version = "0.7" }

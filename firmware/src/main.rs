@@ -7,6 +7,7 @@ use defmt::info;
 use embassy_executor::Spawner;
 #[cfg(feature = "stm32f412")]
 use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::pac;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
 use embassy_time::{Duration, Timer};
@@ -27,11 +28,6 @@ const DFU_MAGIC: u32 = 0xDEAD_BEEF;
 // STM32F4 system bootloader address - see AN2606
 const SYSTEM_MEMORY_BASE: u32 = 0x1FFF_0000;
 
-// STM32F4 register addresses for bootloader entry and USB control
-const RCC_APB2ENR: *mut u32 = 0x4002_3844 as *mut u32;
-const RCC_AHB2ENR: *mut u32 = 0x4002_3834 as *mut u32;
-const SYSCFG_MEMRMP: *mut u32 = 0x4001_3800 as *mut u32;
-
 // Placed in .uninit so startup code does not zero it
 #[link_section = ".uninit.DFU_MAGIC"]
 static mut DFU_FLAG: MaybeUninit<u32> = MaybeUninit::uninit();
@@ -47,11 +43,11 @@ unsafe fn check_bootloader_magic() {
         // The ROM bootloader expects its own vector table mapped at 0x00000000.
         // Without this remap it crashes silently before USB initialises.
 
-        // Enable SYSCFG clock (RCC_APB2ENR bit 14)
-        RCC_APB2ENR.write_volatile(0x0000_4000);
+        // Enable SYSCFG clock
+        pac::RCC.apb2enr().modify(|w| w.set_syscfgen(true));
 
-        // Remap system memory to 0x00000000 (SYSCFG_MEMRMP = 1)
-        SYSCFG_MEMRMP.write_volatile(0x0000_0001);
+        // Remap system memory to 0x00000000 (mem_mode = 1)
+        pac::SYSCFG.memrm().write(|w| w.set_mem_mode(1));
 
         // Jump to ROM bootloader (reads SP and PC from vector table)
         cortex_m::asm::bootload(SYSTEM_MEMORY_BASE as *const u32);
@@ -77,16 +73,12 @@ struct ResetToBootloader;
 impl Reset for ResetToBootloader {
     fn sys_reset(&self) {
         info!("Disabling USB and resetting to bootloader");
-        unsafe {
-            // Gate the OTG_FS clock via RCC_AHB2ENR (bit 7).
-            // This drops D+ low, which the host sees as a cable unplug.
-            let val = RCC_AHB2ENR.read_volatile();
-            RCC_AHB2ENR.write_volatile(val & !(1 << 7));
 
-            // Busy-wait ~5 ms at 84 MHz to give the host time to register
-            // the disconnect before we reset
-            cortex_m::asm::delay(84_000 * 5);
-        }
+        // Disable USB OTG FS clock - this drops D+ low, signaling disconnect to host
+        pac::RCC.ahb2enr().modify(|w| w.set_usb_otg_fsen(false));
+
+        // Busy-wait ~5 ms at 84 MHz to give the host time to register the disconnect
+        cortex_m::asm::delay(84_000 * 5);
 
         cortex_m::peripheral::SCB::sys_reset()
     }
