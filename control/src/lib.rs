@@ -3,7 +3,6 @@ use dfu_core::functional_descriptor::FunctionalDescriptor;
 use dfu_core::memory_layout::MemoryLayout;
 use dfu_core::{DfuProtocol, Error as DfuError};
 use send_wrapper::SendWrapper;
-use std::convert::TryFrom;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -347,26 +346,6 @@ pub async fn connect_device() -> Result<JsValue, JsValue> {
         JsFuture::from(device.select_configuration(1)).await?;
     }
 
-    // Debug: enumerate interfaces
-    if let Some(config) = device.configuration() {
-        let interfaces = config.interfaces();
-        log(&format!("Found {} interfaces", interfaces.length()));
-        for i in 0..interfaces.length() {
-            let iface: web_sys::UsbInterface = interfaces.get(i);
-            let alts = iface.alternates();
-            for j in 0..alts.length() {
-                let alt: web_sys::UsbAlternateInterface = alts.get(j);
-                log(&format!(
-                    "  Interface {}, Alt {}: class=0x{:02x}, endpoints={}",
-                    iface.interface_number(),
-                    alt.alternate_setting(),
-                    alt.interface_class(),
-                    alt.endpoints().length()
-                ));
-            }
-        }
-    }
-
     JsFuture::from(device.claim_interface(WEBUSB_INTERFACE.into())).await?;
     JsFuture::from(device.select_alternate_interface(WEBUSB_INTERFACE.into(), 0)).await?;
     log("Ready to communicate");
@@ -377,11 +356,10 @@ pub async fn connect_device() -> Result<JsValue, JsValue> {
 /// Helper to check if a USB transfer is a ready signal (0-length or 0x0000)
 fn is_ready_signal(transfer: &web_sys::UsbInTransferResult) -> bool {
     match transfer.data() {
-        None => true, // No data = ready signal
+        None => true,
         Some(data) => {
             let len = data.byte_length();
-            // Accept 0-length packet or 2-byte [0x00, 0x00]
-            len == 0 || (len == 2 && data.get_uint8(0) == 0 && data.get_uint8(1) == 0)
+            len == 0 || (len >= 2 && data.get_uint8(0) == 0 && data.get_uint8(1) == 0)
         }
     }
 }
