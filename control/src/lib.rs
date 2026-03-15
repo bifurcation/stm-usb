@@ -240,9 +240,11 @@ impl dfu_core::asynchronous::DfuAsyncIo for WebUsbDfu {
     }
 }
 
+/// Prompt user to authorize the DFU bootloader device.
+/// Call this during initial pairing while you have a user gesture.
 #[wasm_bindgen]
-pub async fn flash_firmware(firmware_data: &[u8]) -> Result<(), JsValue> {
-    log("Starting DFU flash process...");
+pub async fn pair_bootloader() -> Result<(), JsValue> {
+    log("Please select the DFU bootloader device to authorize it...");
 
     let usb = usb();
 
@@ -253,15 +255,34 @@ pub async fn flash_firmware(firmware_data: &[u8]) -> Result<(), JsValue> {
     let filters = [filter];
     let options = UsbDeviceRequestOptions::new(&filters);
 
-    let device: UsbDevice = JsFuture::from(usb.request_device(&options))
+    let _device: UsbDevice = JsFuture::from(usb.request_device(&options))
         .await?
         .dyn_into()?;
 
-    log(&format!(
-        "Connected to DFU device: {} {}",
-        device.manufacturer_name().unwrap_or_default(),
-        device.product_name().unwrap_or_default()
-    ));
+    log("Bootloader device authorized for future use.");
+    Ok(())
+}
+
+/// Check if bootloader device is already authorized (without prompting)
+#[wasm_bindgen]
+pub async fn get_bootloader_device() -> Result<JsValue, JsValue> {
+    let usb = usb();
+    let devices: js_sys::Array = JsFuture::from(usb.get_devices()).await?.dyn_into()?;
+
+    for i in 0..devices.length() {
+        let device: UsbDevice = devices.get(i).dyn_into()?;
+        if device.vendor_id() == DFU_VENDOR_ID && device.product_id() == DFU_PRODUCT_ID {
+            return Ok(device.into());
+        }
+    }
+
+    Err(JsValue::from_str("Bootloader not found"))
+}
+
+/// Flash firmware to an already-obtained DFU device
+#[wasm_bindgen]
+pub async fn flash_to_device(device: &UsbDevice, firmware_data: &[u8]) -> Result<(), JsValue> {
+    log("Starting DFU flash...");
 
     JsFuture::from(device.open()).await?;
     log("Device opened");
@@ -281,7 +302,6 @@ pub async fn flash_firmware(firmware_data: &[u8]) -> Result<(), JsValue> {
     };
 
     // STM32F4 internal flash layout
-    // "@Internal Flash  /0x08000000/04*016Kg,01*064Kg,03*128Kg"
     let memory_layout = MemoryLayout::try_from("04*016Kg,01*064Kg,03*128Kg")
         .map_err(|e| JsValue::from_str(&format!("Memory layout error: {:?}", e)))?;
 
@@ -310,7 +330,7 @@ pub async fn flash_firmware(firmware_data: &[u8]) -> Result<(), JsValue> {
     result.map_err(|e| JsValue::from_str(&format!("DFU error: {:?}", e)))?;
 
     log("Firmware flashed successfully!");
-    log("Device will reset. Please wait a few seconds, then connect.");
+    log("Device will reset. Reconnect when ready.");
 
     JsFuture::from(device.close()).await?;
 
@@ -475,7 +495,8 @@ pub async fn disconnect_device(device: &UsbDevice) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Send DFU_DETACH to trigger device reset into DFU bootloader mode
+/// Send DFU_DETACH to trigger device reset into DFU bootloader mode.
+/// Releases all interfaces and closes the device.
 #[wasm_bindgen]
 pub async fn detach_to_dfu(device: &UsbDevice) -> Result<(), JsValue> {
     log("Sending DFU_DETACH command...");
@@ -501,11 +522,12 @@ pub async fn detach_to_dfu(device: &UsbDevice) -> Result<(), JsValue> {
     let empty = js_sys::Uint8Array::new_with_length(0);
     let _ = JsFuture::from(device.control_transfer_out_with_buffer_source(&params, &empty)?).await;
 
-    // Release interface and close - device will reset
+    // Release all interfaces and close - device will reset
     let _ = JsFuture::from(device.release_interface(DFU_INTERFACE.into())).await;
+    let _ = JsFuture::from(device.release_interface(WEBUSB_INTERFACE.into())).await;
+    let _ = JsFuture::from(device.close()).await;
 
-    log("DFU_DETACH sent. Device will reset to DFU bootloader.");
-    log("Wait a moment, then click 'Flash Firmware via DFU'.");
+    log("DFU_DETACH sent. Device resetting to bootloader...");
 
     Ok(())
 }
