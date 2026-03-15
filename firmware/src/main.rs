@@ -248,6 +248,9 @@ async fn main(#[allow(unused)] spawner: Spawner) {
     info!("USB device built, starting USB task");
     let usb_fut = usb.run();
 
+    // Ready signal for flow control (0x0000)
+    const READY_SIGNAL: [u8; 2] = [0x00, 0x00];
+
     let echo_fut = async {
         info!("Echo task started, waiting for USB connection");
         loop {
@@ -255,33 +258,82 @@ async fn main(#[allow(unused)] spawner: Spawner) {
             ep_out.wait_enabled().await;
             info!("USB configured, ready for data");
 
-            let mut line_buf: Vec<u8, 256> = Vec::new();
-            let mut read_buf = [0u8; 64];
+            // State machine for length-prefixed streaming echo
+            enum State {
+                WaitingForLength { buf: [u8; 2], pos: usize },
+                StreamingPayload { remaining: u16 },
+            }
 
-            loop {
+            let mut state = State::WaitingForLength { buf: [0; 2], pos: 0 };
+            let mut read_buf = [0u8; 64];
+            let mut out_buf: Vec<u8, 64> = Vec::new();
+
+            'outer: loop {
                 match ep_out.read(&mut read_buf).await {
                     Ok(n) => {
-                        for &byte in &read_buf[..n] {
-                            if byte == b'\n' || byte == b'\r' {
-                                if !line_buf.is_empty() {
-                                    if let Ok(s) = core::str::from_utf8(&line_buf) {
-                                        info!("Received: {}", s);
+                        let mut i = 0;
+                        while i < n {
+                            match &mut state {
+                                State::WaitingForLength { buf, pos } => {
+                                    // Accumulate length bytes
+                                    buf[*pos] = read_buf[i];
+                                    *pos += 1;
+                                    i += 1;
+
+                                    if *pos == 2 {
+                                        let len = u16::from_le_bytes(*buf);
+                                        info!("Echoing {} bytes of data...", len);
+
+                                        // Write response length (input + 5 for "ECHO ")
+                                        let response_len = len.saturating_add(5);
+                                        out_buf.clear();
+                                        out_buf.extend_from_slice(&response_len.to_le_bytes()).ok();
+                                        out_buf.extend_from_slice(b"ECHO ").ok();
+
+                                        state = State::StreamingPayload { remaining: len };
                                     }
-                                    // Build response: "ECHO " + line + "\r\n"
-                                    let mut response: Vec<u8, 270> = Vec::new();
-                                    response.extend_from_slice(b"ECHO ").ok();
-                                    response.extend_from_slice(&line_buf).ok();
-                                    response.extend_from_slice(b"\r\n").ok();
-                                    if ep_in.write(&response).await.is_err() {
-                                        info!("Write error");
-                                        break;
-                                    }
-                                    line_buf.clear();
                                 }
-                            } else if line_buf.push(byte).is_err() {
-                                info!("Line buffer overflow");
-                                line_buf.clear();
+                                State::StreamingPayload { remaining } => {
+                                    // Stream bytes from input to output
+                                    let bytes_to_copy = (n - i).min(*remaining as usize);
+                                    for &byte in &read_buf[i..i + bytes_to_copy] {
+                                        if out_buf.push(byte).is_err() || out_buf.is_full() {
+                                            // Flush full buffer
+                                            if ep_in.write(&out_buf).await.is_err() {
+                                                info!("Write error");
+                                                break 'outer;
+                                            }
+                                            out_buf.clear();
+                                            // If push failed, push now to empty buffer
+                                            if out_buf.len() == 0 && out_buf.push(byte).is_err() {
+                                                info!("Buffer error");
+                                                break 'outer;
+                                            }
+                                        }
+                                    }
+                                    i += bytes_to_copy;
+                                    *remaining -= bytes_to_copy as u16;
+
+                                    // Message complete - flush remaining output
+                                    if *remaining == 0 {
+                                        if !out_buf.is_empty() {
+                                            if ep_in.write(&out_buf).await.is_err() {
+                                                info!("Write error");
+                                                break 'outer;
+                                            }
+                                            out_buf.clear();
+                                        }
+                                        info!("... complete");
+                                        state = State::WaitingForLength { buf: [0; 2], pos: 0 };
+                                    }
+                                }
                             }
+                        }
+
+                        // Send ready signal after processing each USB packet
+                        if ep_in.write(&READY_SIGNAL).await.is_err() {
+                            info!("Write error sending ready");
+                            break 'outer;
                         }
                     }
                     Err(EndpointError::BufferOverflow) => {

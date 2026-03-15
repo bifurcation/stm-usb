@@ -186,13 +186,11 @@
             flash_firmware,
             connect_device,
             send_text,
-            receive_text,
             disconnect_device,
             detach_to_dfu
         } from './pkg/control.js';
 
         let device = null;
-        let receiveLoop = null;
 
         window.flashFirmware = async function() {
             const btn = document.getElementById('flashBtn');
@@ -222,7 +220,6 @@
             try {
                 device = await connect_device();
                 updateConnectionStatus(true);
-                startReceiveLoop();
             } catch (e) {
                 console.error('Connect error:', e);
                 log('Error: ' + e);
@@ -230,7 +227,6 @@
         };
 
         window.disconnectDevice = async function() {
-            stopReceiveLoop();
             if (device) {
                 try {
                     await disconnect_device(device);
@@ -244,7 +240,6 @@
 
         window.detachToDfu = async function() {
             if (!device) return;
-            stopReceiveLoop();
             try {
                 await detach_to_dfu(device);
                 device = null;
@@ -307,27 +302,6 @@
                 dfuBtn.disabled = true;
                 textInput.disabled = true;
                 sendBtn.disabled = true;
-            }
-        }
-
-        function startReceiveLoop() {
-            receiveLoop = setInterval(async () => {
-                if (!device) return;
-                try {
-                    await receive_text(device);
-                } catch (e) {
-                    // Ignore timeout errors, they're expected
-                    if (!e.toString().includes('timeout')) {
-                        console.error('Receive error:', e);
-                    }
-                }
-            }, 100);
-        }
-
-        function stopReceiveLoop() {
-            if (receiveLoop) {
-                clearInterval(receiveLoop);
-                receiveLoop = null;
             }
         }
 

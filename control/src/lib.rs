@@ -374,40 +374,118 @@ pub async fn connect_device() -> Result<JsValue, JsValue> {
     Ok(device.into())
 }
 
-#[wasm_bindgen]
-pub async fn send_text(device: &UsbDevice, text: &str) -> Result<(), JsValue> {
-    let data = format!("{}\n", text);
-    let bytes = js_sys::Uint8Array::from(data.as_bytes());
-
-    JsFuture::from(device.transfer_out_with_buffer_source(WEBUSB_ENDPOINT_OUT, &bytes)?).await?;
-    log(&format!("Sent: {}", text));
-
-    Ok(())
+/// Helper to check if a USB transfer is a ready signal (0-length or 0x0000)
+fn is_ready_signal(transfer: &web_sys::UsbInTransferResult) -> bool {
+    match transfer.data() {
+        None => true, // No data = ready signal
+        Some(data) => {
+            let len = data.byte_length();
+            // Accept 0-length packet or 2-byte [0x00, 0x00]
+            len == 0 || (len == 2 && data.get_uint8(0) == 0 && data.get_uint8(1) == 0)
+        }
+    }
 }
 
+/// Read from device until we get a ready signal, accumulating any response data
+async fn read_until_ready(device: &UsbDevice, buffer: &mut Vec<u8>) -> Result<(), JsValue> {
+    loop {
+        let transfer: web_sys::UsbInTransferResult =
+            JsFuture::from(device.transfer_in(WEBUSB_ENDPOINT_IN, 64))
+                .await?
+                .dyn_into()?;
+
+        if transfer.status() != UsbTransferStatus::Ok {
+            return Err(JsValue::from_str("Transfer failed"));
+        }
+
+        if is_ready_signal(&transfer) {
+            return Ok(());
+        }
+
+        // Not a ready signal - it's response data, accumulate it
+        if let Some(data) = transfer.data() {
+            for i in 0..data.byte_length() {
+                buffer.push(data.get_uint8(i as usize));
+            }
+        }
+    }
+}
+
+/// Send text with length-prefix framing and flow control
 #[wasm_bindgen]
-pub async fn receive_text(device: &UsbDevice) -> Result<String, JsValue> {
-    let transfer: web_sys::UsbInTransferResult =
-        JsFuture::from(device.transfer_in(WEBUSB_ENDPOINT_IN, 64))
-            .await?
-            .dyn_into()?;
+pub async fn send_text(device: &UsbDevice, text: &str) -> Result<String, JsValue> {
+    let performance = window()
+        .performance()
+        .ok_or("Performance API not available")?;
 
-    if transfer.status() != UsbTransferStatus::Ok {
-        return Err(JsValue::from_str("Transfer failed"));
+    let payload = text.as_bytes();
+    let len = payload.len() as u16;
+
+    // Build length-prefixed message
+    let mut data = Vec::with_capacity(2 + payload.len());
+    data.extend_from_slice(&len.to_le_bytes());
+    data.extend_from_slice(payload);
+
+    // Start timing from first byte sent
+    let start_time = performance.now();
+
+    // Buffer to accumulate response data as we send chunks
+    let mut buffer: Vec<u8> = Vec::new();
+
+    // Send data in chunks, collecting response data after each
+    const CHUNK_SIZE: usize = 64;
+    let mut offset = 0;
+
+    while offset < data.len() {
+        let end = (offset + CHUNK_SIZE).min(data.len());
+        let chunk = &data[offset..end];
+        let bytes = js_sys::Uint8Array::from(chunk);
+        JsFuture::from(device.transfer_out_with_buffer_source(WEBUSB_ENDPOINT_OUT, &bytes)?).await?;
+        offset = end;
+
+        // After each chunk, read response data until we get a ready signal
+        read_until_ready(device, &mut buffer).await?;
     }
 
-    let data = transfer.data().ok_or("No data received")?;
-    let mut bytes = vec![0u8; data.byte_length() as usize];
-    for i in 0..bytes.len() {
-        bytes[i] = data.get_uint8(i);
-    }
+    log(&format!("Sent ({} bytes): {}", len, text));
 
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    if !text.is_empty() {
-        log(&format!("Received: {}", text.trim()));
-    }
+    // Parse the response from accumulated buffer
+    let response = if buffer.len() >= 2 {
+        let response_len = u16::from_le_bytes([buffer[0], buffer[1]]) as usize;
+        let total_expected = 2 + response_len;
+        if buffer.len() >= total_expected {
+            String::from_utf8_lossy(&buffer[2..total_expected]).to_string()
+        } else {
+            return Err(JsValue::from_str(&format!(
+                "Incomplete response: got {} bytes, expected {}",
+                buffer.len(),
+                total_expected
+            )));
+        }
+    } else {
+        return Err(JsValue::from_str("No response received"));
+    };
 
-    Ok(text)
+    // End timing when last byte received
+    let end_time = performance.now();
+    let elapsed_ms = end_time - start_time;
+
+    // Calculate throughput: payload bytes sent, round-trip time
+    let bytes_per_sec = if elapsed_ms > 0.0 {
+        (len as f64) / (elapsed_ms / 1000.0)
+    } else {
+        0.0
+    };
+
+    log(&format!(
+        "Received ({} bytes) in {:.2}ms ({:.0} bytes/sec): {}",
+        response.len(),
+        elapsed_ms,
+        bytes_per_sec,
+        response
+    ));
+
+    Ok(response)
 }
 
 #[wasm_bindgen]
