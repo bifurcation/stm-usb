@@ -28,8 +28,8 @@ firmware: $(FIRMWARE_BIN)
 wasm: $(WASM_PKG)
 
 $(FIRMWARE_BIN): $(FIRMWARE_SRC)
-	cd $(FIRMWARE_DIR) && cargo build --release --features $(CHIP)
-	cd $(FIRMWARE_DIR) && cargo objcopy --release --features $(CHIP) -- -O binary $(FIRMWARE_BIN)
+	cd $(FIRMWARE_DIR) && cargo build --release --no-default-features --features $(CHIP)
+	cd $(FIRMWARE_DIR) && cargo objcopy --release --no-default-features --features $(CHIP) -- -O binary $(FIRMWARE_BIN)
 
 $(WASM_PKG): $(CONTROL_SRC)
 	cd $(CONTROL_DIR) && wasm-pack build --target web --out-dir $(WWW_DIR)/pkg
@@ -39,6 +39,9 @@ $(WWW_FIRMWARE): $(FIRMWARE_BIN)
 
 serve: wasm $(WWW_FIRMWARE)
 	python3 -m http.server 8080 --directory $(WWW_DIR)
+
+serve-f411:
+	$(MAKE) serve CHIP=stm32f411
 
 # Always run wasm-pack (it's smart enough to skip if nothing changed)
 .PHONY: wasm-force

@@ -240,11 +240,11 @@ impl dfu_core::asynchronous::DfuAsyncIo for WebUsbDfu {
     }
 }
 
-/// Prompt user to authorize the DFU bootloader device.
-/// Call this during initial pairing while you have a user gesture.
+/// Prompt user to select a DFU bootloader device.
+/// Returns the device for immediate use.
 #[wasm_bindgen]
-pub async fn pair_bootloader() -> Result<(), JsValue> {
-    log("Please select the DFU bootloader device to authorize it...");
+pub async fn request_bootloader_device() -> Result<JsValue, JsValue> {
+    log("Select the DFU bootloader device...");
 
     let usb = usb();
 
@@ -255,12 +255,12 @@ pub async fn pair_bootloader() -> Result<(), JsValue> {
     let filters = [filter];
     let options = UsbDeviceRequestOptions::new(&filters);
 
-    let _device: UsbDevice = JsFuture::from(usb.request_device(&options))
+    let device: UsbDevice = JsFuture::from(usb.request_device(&options))
         .await?
         .dyn_into()?;
 
-    log("Bootloader device authorized for future use.");
-    Ok(())
+    log("Bootloader device selected.");
+    Ok(device.into())
 }
 
 /// Check if bootloader device is already authorized (without prompting)

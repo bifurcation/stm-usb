@@ -16,62 +16,79 @@ WebUSB echo device firmware for STM32F4xx with a web-based control panel.
 
 ## Quick Start
 
-Build everything and start the server:
+### WeAct Black Pill (STM32F411CE)
 
+The Black Pill can be flashed entirely from the browser using the ROM bootloader.
+
+**First flash:**
+1. Start the server:
+   ```bash
+   make serve-f411
+   ```
+2. Open http://localhost:8080 in Chrome/Edge
+3. Put the board into DFU mode:
+   - Hold BOOT0 button
+   - Press and release NRST (reset)
+   - Release BOOT0
+4. Scroll to "First Flash" and click **Direct Flash**
+5. Select "STM32 BOOTLOADER" when prompted
+
+**Subsequent flashes:** Connect and click Flash (the firmware resets to DFU automatically).
+
+### NUCLEO-F412ZG
+
+The NUCLEO board requires ST-LINK for the first flash (probe-rs must be installed).
+
+**First flash:**
+```bash
+cd firmware && cargo run
+```
+
+**Subsequent flashes** (via web UI):
 ```bash
 make serve
 ```
-
-Open http://localhost:8080 in Chrome or Edge (WebUSB requires a Chromium-based browser).
+Open http://localhost:8080, connect to the device, and click Flash.
 
 ## Make Targets
 
 | Target               | Description                                      |
 |----------------------|--------------------------------------------------|
-| `make firmware`      | Build firmware and create DFU binary (.bin)      |
-| `make wasm`          | Build WASM control panel (requires firmware first) |
-| `make serve`         | Build all and serve on http://localhost:8080     |
+| `make serve`         | Build for F412 (NUCLEO) and serve web UI         |
+| `make serve-f411`    | Build for F411 (Black Pill) and serve web UI     |
+| `make firmware`      | Build firmware only (uses CHIP variable)         |
+| `make wasm`          | Build WASM control panel                         |
 | `make clean`         | Clean all build artifacts                        |
 | `make check`         | Run formatting and build checks (same as CI)     |
 | `make install-hooks` | Install git pre-push hook                        |
 
-## Usage
+## Communicating with the Device
 
-### Flashing Firmware via DFU
-
-1. Put the STM32F411 into DFU mode:
-   - Hold BOOT0 button
-   - Press and release RESET
-   - Release BOOT0
-2. Click "Flash Firmware via DFU" in the web UI
-3. Select the DFU device when prompted
-4. Wait for flashing to complete
-
-### Communicating with the Device
-
-1. After flashing, wait a few seconds for the device to reboot
-2. Click "Connect to Device"
+1. After flashing, wait for the device to reboot
+2. Click **Connect** in the web UI
 3. Select the device when prompted
 4. Type text and press Enter or click Send
-5. The device echoes back each line
+5. The device echoes back with "ECHO " prefix
 
-## Hardware Assumptions
+## Hardware
 
-This firmware has not been tested on real hardware. It assumes:
+### Supported Boards
 
-| Assumption            | Value                       | Code Location                                       |
-|-----------------------|-----------------------------|-----------------------------------------------------|
-| MCU                   | STM32F411CE or STM32F412ZG  | [Makefile:8](Makefile#L8) (`CHIP` variable)         |
-| HSE crystal frequency | 25 MHz                      | [firmware/src/main.rs:34](firmware/src/main.rs#L34) |
-| USB D- pin            | PA11                        | [firmware/src/main.rs:64](firmware/src/main.rs#L64) |
-| USB D+ pin            | PA12                        | [firmware/src/main.rs:63](firmware/src/main.rs#L63) |
-| VBUS detection        | Disabled                    | [firmware/src/main.rs:58](firmware/src/main.rs#L58) |
+| Board                  | Chip         | HSE    | Notes                           |
+|------------------------|--------------|--------|---------------------------------|
+| NUCLEO-F412ZG          | STM32F412ZG  | 8 MHz  | ST-LINK bypass mode             |
+| WeAct Black Pill V3.1  | STM32F411CE  | 25 MHz | No debugger, DFU flash only     |
 
-To build for a different chip:
+### Pin Assignments
 
-```bash
-make firmware CHIP=stm32f412
-```
+| Function       | Pin  |
+|----------------|------|
+| USB D-         | PA11 |
+| USB D+         | PA12 |
+| LED (F411)     | PC13 |
+| LED (F412)     | PB14 |
+
+VBUS detection is disabled (assumes always connected).
 
 ## USB IDs
 
