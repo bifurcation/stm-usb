@@ -12,8 +12,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     console, Document, HtmlTextAreaElement, Navigator, Usb, UsbControlTransferParameters,
-    UsbDevice, UsbDeviceFilter, UsbDeviceRequestOptions, UsbRecipient, UsbRequestType,
-    UsbTransferStatus,
+    UsbDevice, UsbDeviceFilter, UsbDeviceRequestOptions, UsbInterface, UsbRecipient,
+    UsbRequestType, UsbTransferStatus,
 };
 
 const VENDOR_ID: u16 = 0x1209;
@@ -363,10 +363,21 @@ pub async fn connect_device() -> Result<JsValue, JsValue> {
     JsFuture::from(device.open()).await?;
     log("Device opened");
 
-    if device.configuration().is_none() {
+    // Log configuration info for debugging
+    if let Some(config) = device.configuration() {
+        log(&format!("Configuration: {}", config.configuration_value()));
+        let interfaces: js_sys::Array = config.interfaces().dyn_into().unwrap();
+        for i in 0..interfaces.length() {
+            if let Ok(iface) = interfaces.get(i).dyn_into::<UsbInterface>() {
+                log(&format!("  Interface {}", iface.interface_number()));
+            }
+        }
+    } else {
+        log("No configuration, selecting config 1");
         JsFuture::from(device.select_configuration(1)).await?;
     }
 
+    log(&format!("Claiming interface {}", WEBUSB_INTERFACE));
     JsFuture::from(device.claim_interface(WEBUSB_INTERFACE.into())).await?;
     JsFuture::from(device.select_alternate_interface(WEBUSB_INTERFACE.into(), 0)).await?;
     log("Ready to communicate");

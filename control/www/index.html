@@ -125,22 +125,51 @@
                 device = null;
                 updateConnectionStatus(false);
 
-                // Wait for bootloader to appear
+                // Wait for bootloader to appear (already authorized)
                 btn.textContent = 'Waiting for bootloader...';
-                const bootloader = await waitForBootloader(5000);
+                const bootloader = await waitForBootloader(3000);
 
                 // Flash
                 btn.textContent = 'Flashing...';
                 await flash_to_device(bootloader, firmwareData);
 
             } catch (e) {
+                if (e.needsAuthorization) {
+                    // Bootloader not authorized - show authorize button
+                    btn.textContent = 'Authorize Bootloader';
+                    btn.disabled = false;
+                    btn.onclick = authorizeAndFlash;
+                    log('Bootloader not authorized. Click "Authorize Bootloader" to continue.');
+                    return;
+                }
                 console.error('Flash error:', e);
                 log('Error: ' + e);
-            } finally {
-                btn.disabled = true; // Stay disabled until reconnected
+                btn.disabled = true;
                 btn.textContent = 'Flash';
             }
         };
+
+        async function authorizeAndFlash() {
+            const btn = document.getElementById('flashBtn');
+            btn.disabled = true;
+
+            try {
+                btn.textContent = 'Select bootloader...';
+                const bootloader = await request_bootloader_device();
+
+                btn.textContent = 'Flashing...';
+                await flash_to_device(bootloader, firmwareData);
+            } catch (e) {
+                if (!e.toString().includes('cancelled')) {
+                    console.error('Flash error:', e);
+                    log('Error: ' + e);
+                }
+            } finally {
+                btn.disabled = true;
+                btn.textContent = 'Flash';
+                btn.onclick = flashFirmware;
+            }
+        }
 
         async function waitForBootloader(timeoutMs) {
             log('Waiting for bootloader to appear...');
@@ -155,7 +184,10 @@
                 }
                 await new Promise(r => setTimeout(r, 200));
             }
-            throw new Error('Bootloader did not appear. Have you paired it? (See First-Time Setup)');
+            // Signal that authorization is needed
+            const err = new Error('Bootloader not authorized');
+            err.needsAuthorization = true;
+            throw err;
         }
 
         window.toggleConnection = async function() {

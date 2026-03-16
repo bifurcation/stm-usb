@@ -12,7 +12,7 @@ use embassy_stm32::pac;
 use embassy_stm32::usb::Driver;
 use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
 use embassy_time::{Duration, Timer};
-use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
+use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, WebUsb};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::Builder;
 use embassy_usb_dfu::consts::DfuAttributes;
@@ -96,7 +96,6 @@ async fn blink_led(mut led: Output<'static>) {
     }
 }
 
-const LANDING_PAGE_URL: &str = "localhost:8080";
 const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0x0001;
 const MANUFACTURER: &str = "Hactar";
@@ -206,7 +205,7 @@ async fn main(#[allow(unused)] spawner: Spawner) {
     let webusb_config = WEBUSB_CONFIG.init(WebUsbConfig {
         max_packet_size: 64,
         vendor_code: 1,
-        landing_url: Some(Url::new(LANDING_PAGE_URL)),
+        landing_url: None, // Allow any origin
     });
     let webusb_state = WEBUSB_STATE.init(WebUsbState::new());
     WebUsb::configure(&mut builder, webusb_state, webusb_config);
